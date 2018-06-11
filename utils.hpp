@@ -251,7 +251,7 @@ namespace cinatra {
         return strval;
     }
 
-	std::string form_urldecode(const std::string &src) {
+	static std::string form_urldecode(const std::string &src) {
 		std::string ret;
 		char ch;
 		int i, ii;
@@ -468,7 +468,7 @@ public:\
 		return get_time_str(std::time(nullptr));
 	}
 
-	const std::map<std::string_view, std::string_view> get_cookies_map(std::string_view cookies_str)
+	static const std::map<std::string_view, std::string_view> get_cookies_map(std::string_view cookies_str)
 	{
 		std::map<std::string_view, std::string_view> cookies;
 		auto cookies_vec = split(cookies_str,"; ");
