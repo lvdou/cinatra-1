@@ -15,6 +15,7 @@ namespace fs = boost::filesystem;
 #include "utils.hpp"
 
 namespace cinatra {
+
 class upload_file {
 public:
     void write( const char *data, size_t size ) {
@@ -29,6 +30,10 @@ public:
             file_path_ = std::string( &file_name[ 0 ], file_name.length( ));
 
         return r;
+    }
+
+    bool is_open(){
+            return file_.is_open();
     }
 
     bool remove( ) const {
@@ -84,9 +89,10 @@ public:
         file_path_ = new_file_path;
     }
 
-
     void close( ) {
-        file_.close( );
+        if(file_.is_open()){
+                file_.close();
+	}
     }
 
     size_t get_file_size( ) const {

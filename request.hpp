@@ -13,14 +13,17 @@
 #include "session_manager.hpp"
 #include "url_encode_decode.hpp"
 namespace cinatra {
-	enum class data_proc_state : int8_t {
-		data_begin,
-		data_continue,
-		data_end,
-		data_all_end,
-		data_close,
-		data_error
-	};
+    enum class data_proc_state : int8_t {
+        data_begin,
+        data_continue,
+        data_end,
+        data_all_end,
+        data_close,
+        data_error,
+        file_continue,
+        file_begin,
+        file_end
+    };
 
 	using tcp_socket = boost::asio::ip::tcp::socket;
 	template <typename socket_type>
@@ -170,6 +173,7 @@ namespace cinatra {
 
 		void reset() {
 			cur_size_ = 0;
+			receive_continue_flag = true;
 			files_.clear();
 			is_chunked_ = false;
 			state_ = data_proc_state::data_begin;
@@ -178,6 +182,7 @@ namespace cinatra {
             utf8_character_pathinfo_params.clear();
             queries_.clear();
             multipart_form_map_.clear();
+			copy_multipart_headers_.clear();
 		}
 
 		void fit_size() {
@@ -261,15 +266,25 @@ namespace cinatra {
 			return {};
 		}
 
-		const std::multimap<std::string_view, std::string_view>& get_multipart_headers() const {
-			return multipart_headers_;
-		}
+		//const std::multimap<std::string_view, std::string_view>& get_multipart_headers() const {
+		//	return multipart_headers_;
+		//}
 
 		std::string_view get_multipart_file_name() const {
-			if (multipart_headers_.empty())
+			if (multipart_headers_.empty()&&copy_multipart_headers_.empty())
 				return {};
 
-			auto it = multipart_headers_.begin();
+			if (!multipart_headers_.empty()) {
+				return get_multipart_file_name(multipart_headers_);
+			}
+			else {
+				return get_multipart_file_name(copy_multipart_headers_);
+			}
+		}
+
+		template<typename T>
+		std::string_view get_multipart_file_name(T& map) const {
+			auto it = map.begin();
 			auto val = it->second;
 			auto pos = val.find("filename");
 			if (pos == std::string_view::npos) {
@@ -286,57 +301,75 @@ namespace cinatra {
 			return filename;
 		}
 
-        std::string_view get_multipart_key_name() const {
-            if (multipart_headers_.empty())
-                return {};
+		std::string_view get_multipart_key_name() const {
+			if (multipart_headers_.empty())
+				return {};
 
-            auto it = multipart_headers_.begin();
-            auto val = it->second;
-            auto pos = val.find("name");
-            if (pos == std::string_view::npos) {
-                return {};
-            }
+			auto it = multipart_headers_.begin();
+			auto val = it->second;
+			auto pos = val.find("name");
+			if (pos == std::string_view::npos) {
+				return {};
+			}
 
-            auto start = val.find('"', pos) + 1;
-            auto end = val.rfind('"');
-            if (start == std::string_view::npos || end == std::string_view::npos || end<start) {
-                return {};
-            }
+			auto start = val.find('"', pos) + 1;
+			auto end = val.rfind('"');
+			if (start == std::string_view::npos || end == std::string_view::npos || end<start) {
+				return {};
+			}
 
-            auto key_name = val.substr(start, end - start);
-            return key_name;
-        }
+			auto key_name = val.substr(start, end - start);
+			return key_name;
+		}
 
-        void save_multipart_key_value(const std::string& key,const std::string& value)
-        {
+		void save_multipart_key_value(const std::string& key,const std::string& value)
+		{
+			if(!key.empty()){
+				if(multipart_form_map_.find(key)!=multipart_form_map_.end()){
+					multipart_form_map_[key] = value;
+				}else{
+					multipart_form_map_.insert(std::make_pair(key,value));
+				}
+			}
+		}
+
+		std::string get_multipart_value_by_key(const std::string& key)
+		{
 			if(!key.empty())
-            multipart_form_map_.insert(std::make_pair(key,value));
-        }
-
-        std::string& get_multipart_value_by_key(const std::string& key)
-        {
-			if(!key.empty())
-            return multipart_form_map_[key];
-        }
+			{
+				auto iter = multipart_form_map_.find(key);
+				if(iter!=multipart_form_map_.end()){
+					return iter->second;
+				}
+				return {};
+			}
+			return {};
+		}
 
 		void handle_multipart_key_value(){
 			if(!multipart_form_map_.empty()){
-                for(auto iter = multipart_form_map_.begin();iter!=multipart_form_map_.end();++iter){
-					form_url_map_.insert(std::make_pair(std::string_view(iter->first.data(),iter->first.size()),std::string_view(iter->second.data(),iter->second.size())));
+				for(auto iter = multipart_form_map_.begin();iter!=multipart_form_map_.end();++iter){
+					auto key = std::string_view(iter->first.data(),iter->first.size());
+					auto value = std::string_view(iter->second.data(),iter->second.size());
+					if(form_url_map_.find(key)!=form_url_map_.end())
+					{
+						form_url_map_[key] = value;
+					}else{
+						form_url_map_.insert(std::make_pair(key,value));
+					}
 				}
 			}
 		}
 
         bool is_multipart_file() const {
             if (multipart_headers_.empty()){
+				if (!copy_multipart_headers_.empty()) {
+					return copy_multipart_headers_.find("Content-Type") != copy_multipart_headers_.end();
+				}
                 return false;
             }
-            auto it = multipart_headers_.find("Content-Type");
-            if(it!=multipart_headers_.end())
-            {
-                return true;
-            }
-            return false;
+
+			return multipart_headers_.find("Content-Type") != multipart_headers_.end();
         }
 
 		void set_multipart_headers(const std::multimap<std::string_view, std::string_view>& headers) {
@@ -371,9 +404,11 @@ namespace cinatra {
 				return {};
 			}
 
-			val = { &str[pos], length - pos };
-			val = trim(val);
-			query.emplace(key, val);
+			if ((length - pos) > 0) {
+				val = { &str[pos], length - pos };
+				val = trim(val);
+				query.emplace(key, val);
+			}
 			return query;
 		}
 
@@ -491,9 +526,9 @@ namespace cinatra {
 		}
 
 		std::string_view get_query_value(std::string_view key) const{
-            auto url = get_url();
-            url = url.length()>1 && url.back()=='/' ? url.substr(0,url.length()-1):url;
-            std::string map_key = std::string(url.data(),url.size())+std::string(key.data(),key.size());
+			auto url = get_url();
+			url = url.length()>1 && url.back()=='/' ? url.substr(0,url.length()-1):url;
+			std::string map_key = std::string(url.data(),url.size())+std::string(key.data(),key.size());
 			auto it = queries_.find(key);
 			if (it == queries_.end()) {
 				auto itf = form_url_map_.find(key);
@@ -551,7 +586,7 @@ namespace cinatra {
 				return;
 
 			assert(!files_.empty());
-
+			assert(files_.back().is_open());
 			files_.back().write(data, size);
 		}
 
@@ -595,13 +630,23 @@ namespace cinatra {
 		    remotePort_ = port;
 		    //std::cout<<"set remote endpoint."<<std::endl;
 		}
+
 		const std::string& remoteIp() const
 		{
 		    return remoteIp_;
 		}
+
 		const int& remotePort() const
 		{
 		    return remotePort_;
+		}
+
+		void set_continue(bool value) const {
+			receive_continue_flag = value;
+		}
+
+		bool need_continue() const{
+			return  receive_continue_flag;
 		}
 
 	private:
@@ -623,6 +668,10 @@ namespace cinatra {
 			url_str_ = std::string(url_, url_len_);
 			method_len_ = 0;
 			url_len_ = 0;
+			for (auto pair : multipart_headers_) {
+				copy_multipart_headers_.emplace(std::string(pair.first), std::string(pair.second));
+			}
+			multipart_headers_.clear();
 		}
 
 		void check_gzip() {
@@ -654,6 +703,7 @@ namespace cinatra {
 		std::string_view raw_url_;
 		std::string method_str_;
 		std::string url_str_;
+		std::multimap<std::string, std::string> copy_multipart_headers_;
 
 		size_t cur_size_ = 0;
 		size_t left_body_len_ = 0;
@@ -677,5 +727,6 @@ namespace cinatra {
 
 		std::string remoteIp_;
 		int remotePort_;
+		mutable bool receive_continue_flag = true;
 	};
 }
