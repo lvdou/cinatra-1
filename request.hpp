@@ -589,6 +589,21 @@ namespace cinatra {
 			return get_session(CSESSIONID);
 		}
 
+		void set_remote_endpoint(const std::string& ip, int port)
+		{
+		    remoteIp_ = ip;
+		    remotePort_ = port;
+		    //std::cout<<"set remote endpoint."<<std::endl;
+		}
+		const std::string& remoteIp() const
+		{
+		    return remoteIp_;
+		}
+		const int& remotePort() const
+		{
+		    return remotePort_;
+		}
+
 	private:
 		void resize_double() {
 			size_t size = buf_.size();
@@ -659,5 +674,8 @@ namespace cinatra {
 		std::vector<upload_file> files_;
 		mutable std::map<std::string,std::string> utf8_character_params;
 		mutable std::map<std::string,std::string> utf8_character_pathinfo_params;
+
+		std::string remoteIp_;
+		int remotePort_;
 	};
 }

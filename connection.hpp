@@ -160,6 +160,7 @@ namespace cinatra {
 			req_.reset();
 			res_.reset();
 			reset_timer();
+			//等待添加remoteIp到req_
 
 #ifdef CINATRA_ENABLE_SSL
 			async_handshake();
