@@ -46,7 +46,7 @@ cinatra是header-only的，直接引用头文件既可。
 		int max_thread_num = std::thread::hardware_concurrency();
 		http_server server(max_thread_num);
 		server.listen("0.0.0.0", "8080");
-		server.set_http_handler<GET, POST>("/", [](const request& req, response& res) {
+		server.set_http_handler<GET, POST>("/", [](request& req, response& res) {
 			res.set_status_and_content(status_type::ok, "hello world");
 		});
 
@@ -64,7 +64,7 @@ cinatra是header-only的，直接引用头文件既可。
 	int main() {
 		http_server server(std::thread::hardware_concurrency());
 		server.listen("0.0.0.0", "8080");
-		server.set_http_handler<GET, POST>("/test", [](const request& req, response& res) {
+		server.set_http_handler<GET, POST>("/test", [](request& req, response& res) {
 			auto name = req.get_header_value("name");
 			if (name.empty()) {
 				res.set_status_and_content(status_type::bad_request, "no name");
@@ -92,12 +92,12 @@ cinatra是header-only的，直接引用头文件既可。
 	//日志切面
 	struct log_t
 	{
-		bool before(const request& req, response& res) {
+		bool before(request& req, response& res) {
 			std::cout << "before log" << std::endl;
 			return true;
 		}
 	
-		bool after(const request& req, response& res) {
+		bool after(request& req, response& res) {
 			std::cout << "after log" << std::endl;
 			return true;
 		}
@@ -105,7 +105,7 @@ cinatra是header-only的，直接引用头文件既可。
 	
 	//校验的切面
 	struct check {
-		bool before(const request& req, response& res) {
+		bool before(request& req, response& res) {
 			std::cout << "before check" << std::endl;
 			if (req.get_header_value("name").empty()) {
 				res.set_status_and_content(status_type::bad_request);
@@ -115,7 +115,7 @@ cinatra是header-only的，直接引用头文件既可。
 			return true;
 		}
 	
-		bool after(const request& req, response& res) {
+		bool after(request& req, response& res) {
 			std::cout << "after check" << std::endl;
 			return true;
 		}
@@ -124,7 +124,7 @@ cinatra是header-only的，直接引用头文件既可。
 	int main() {
 		http_server server(std::thread::hardware_concurrency());
 		server.listen("0.0.0.0", "8080");
-		server.set_http_handler<GET, POST>("/aspect", [](const request& req, response& res) {
+		server.set_http_handler<GET, POST>("/aspect", [](request& req, response& res) {
 			res.set_status_and_content(status_type::ok, "hello world");
 		}, check{}, log_t{});
 
@@ -146,56 +146,16 @@ cinatra目前支持了multipart和octet-stream格式的上传。
 		http_server server(std::thread::hardware_concurrency());
 		server.listen("0.0.0.0", "8080");
 
-		std::atomic_int n = 0;
 		//http upload(multipart)
-		server.set_http_handler<GET, POST>("/upload_multipart", [&n](const request& req, response& res) {
-			assert(req.get_http_type() == http_type::multipart);
-			auto state = req.get_state();
-			switch (state)
-			{
-			case cinatra::data_proc_state::data_begin:
-			{
-				auto file_name_s = req.get_multipart_file_name();
-				auto extension = get_extension(file_name_s);
-				
-				std::string file_name = std::to_string(n++) + std::string(extension.data(), extension.length());
-				auto file = std::make_shared<std::ofstream>(file_name, std::ios::binary);
-				if (!file->is_open()) {
-					res.set_continue(false);
-					return;
-				}
-				req.get_conn()->set_tag(file);
+		server.set_http_handler<GET, POST>("/upload_multipart", [](request& req, response& res) {
+			assert(req.get_content_type() == content_type::multipart);
+			
+			auto& files = req.get_upload_files();
+			for (auto& file : files) {
+				std::cout << file.get_file_path() << " " << file.get_file_size() << std::endl;
 			}
-			break;
-			case cinatra::data_proc_state::data_continue:
-			{
-				if (!res.need_continue()) {
-					return;
-				}
 	
-				auto file = std::any_cast<std::shared_ptr<std::ofstream>>(req.get_conn()->get_tag());
-				auto part_data = req.get_part_data();
-				file->write(part_data.data(), part_data.length());
-			}
-			break;
-			case cinatra::data_proc_state::data_end:
-			{
-				std::cout << "one file finished" << std::endl;
-			}
-			break;
-			case cinatra::data_proc_state::data_all_end:
-			{
-				//all the upstream end
-				std::cout << "all files finished" << std::endl;
-				res.set_status_and_content(status_type::ok);
-			}
-			break;
-			case cinatra::data_proc_state::data_error:
-			{
-				//network error
-			}
-			break;
-			}
+			res.set_status_and_content(status_type::ok, "multipart finished");
 		});
 
 		server.run();
@@ -214,46 +174,15 @@ cinatra目前支持了multipart和octet-stream格式的上传。
 		http_server server(std::thread::hardware_concurrency());
 		server.listen("0.0.0.0", "8080");
 
-		std::atomic_int n = 0;
 		//http upload(octet-stream)
-		server.set_http_handler<GET, POST>("/upload_octet_stream", [&n](const request& req, response& res) {
-			assert(req.get_http_type() == http_type::octet_stream);
-			auto state = req.get_state();
-			switch (state)
-			{
-			case cinatra::data_proc_state::data_begin:
-			{
-				std::string file_name = std::to_string(n++);;
-				auto file = std::make_shared<std::ofstream>(file_name, std::ios::binary);
-				if (!file->is_open()) {
-					res.set_continue(false);
-					return;
-				}
-				req.get_conn()->set_tag(file);
+		server.set_http_handler<GET, POST>("/upload_octet_stream", [](request& req, response& res) {
+			assert(req.get_content_type() == content_type::octet_stream);
+			auto& files = req.get_upload_files();
+			for (auto& file : files) {
+				std::cout << file.get_file_path() << " " << file.get_file_size() << std::endl;
 			}
-			break;
-			case cinatra::data_proc_state::data_continue:
-			{
-				if (!res.need_continue()) {
-					return;
-				}
 	
-				auto file = std::any_cast<std::shared_ptr<std::ofstream>>(req.get_conn()->get_tag());
-				auto part_data = req.get_part_data();
-				file->write(part_data.data(), part_data.length());
-			}
-			break;
-			case cinatra::data_proc_state::data_end:
-			{
-				std::cout << "one file finished" << std::endl;
-			}
-			break;
-			case cinatra::data_proc_state::data_error:
-			{
-				//network error
-			}
-			break;
-			}
+			res.set_status_and_content(status_type::ok, "octet-stream finished");
 		});
 
 		server.run();
@@ -262,68 +191,9 @@ cinatra目前支持了multipart和octet-stream格式的上传。
 
 ## 示例5：文件下载
 
-	#include "http_server.hpp"
-	using namespace cinatra;
-	
-	int main() {
-		http_server server(std::thread::hardware_concurrency());
-		server.listen("0.0.0.0", "8080");
-
-		//http download(chunked)
-		server.set_http_handler<GET, POST>("/download_chunked", [](const request& req, response& res) {
-			auto state = req.get_state();
-			switch (state)
-			{
-			case cinatra::data_proc_state::data_begin:
-			{
-				std::string filename = "2.jpg";
-				auto in = std::make_shared<std::ifstream>(filename, std::ios::binary);
-				if (!in->is_open()) {
-					req.get_conn()->on_close();
-					return;
-				}
-	
-				auto conn = req.get_conn();
-				conn->set_tag(in);
-				auto extension = get_extension(filename.data());
-				auto mime = get_mime_type(extension);
-				conn->write_chunked_header(mime);
-			}
-			break;
-			case cinatra::data_proc_state::data_continue:
-			{
-				auto conn = req.get_conn();
-				auto in = std::any_cast<std::shared_ptr<std::ifstream>>(conn->get_tag());
-				
-				std::string str;
-				const size_t len = 2*1024;
-				str.resize(len);
-	
-				in->read(&str[0], len);
-				size_t read_len = in->gcount();
-				if (read_len != len) {
-					str.resize(read_len);
-				}
-				bool eof = (read_len==0|| read_len != len);
-				conn->write_chunked_data(std::move(str), eof);
-			}
-			break;
-			case cinatra::data_proc_state::data_end:
-			{
-				std::cout << "chunked send finish" << std::endl;
-			}
-			break;
-			case cinatra::data_proc_state::data_error:
-			{
-				//network error
-			}
-			break;
-			}
-		});
-
-		server.run();
-		return 0;
-	}
+	//chunked download
+	//http://127.0.0.1:8080/assets/show.jpg
+	//cinatra will send you the file, if the file is big file(more than 5M) the file will be downloaded by chunked. support continues download
 
 ## 示例6：websocket
 
@@ -335,35 +205,28 @@ cinatra目前支持了multipart和octet-stream格式的上传。
 		server.listen("0.0.0.0", "8080");
 
 		//web socket
-		server.set_http_handler<GET, POST>("/ws", [](const request& req, response& res) {
-			assert(req.get_http_type() == http_type::websocket);
-			auto state = req.get_state();
-			switch (state)
-			{
-			case cinatra::data_proc_state::data_begin:
-			{
+		server.set_http_handler<GET, POST>("/ws", [](request& req, response& res) {
+			assert(req.get_content_type() == content_type::websocket);
+	
+			req.on(ws_open, [](request& req){
 				std::cout << "websocket start" << std::endl;
-			}
-			break;
-			case cinatra::data_proc_state::data_continue:
-			{
+			});
+	
+			req.on(ws_message, [](request& req) {
 				auto part_data = req.get_part_data();
 				//echo
-				req.get_conn()->send_ws_msg(std::string(part_data.data(), part_data.length()));
+				std::string str = std::string(part_data.data(), part_data.length());
+				req.get_conn()->send_ws_string(std::move(str));
 				std::cout << part_data.data() << std::endl;
-			}
-			break;
-			case cinatra::data_proc_state::data_close:
-			{
+			});
+	
+			req.on(ws_close, [](request& req) {
 				std::cout << "websocket close" << std::endl;
-			}
-			break;
-			case cinatra::data_proc_state::data_error:
-			{
-				std::cout << "network error" << std::endl;
-			}
-			break;
-			}
+			});
+	
+			req.on(ws_error, [](request& req) {
+				std::cout << "websocket error" << std::endl;
+			});
 		});
 
 		server.run();
@@ -383,11 +246,11 @@ cinatra目前支持了multipart和octet-stream格式的上传。
 		http_server_<io_service_inplace> server;
 		server.listen("8080");
 	
-		server.set_http_handler<GET, POST>("/", [](const request& req, response& res) {
+		server.set_http_handler<GET, POST>("/", [](request& req, response& res) {
 			res.set_status_and_content(status_type::ok, "hello world");
 		});
 
-		server.set_http_handler<GET, POST>("/close", [&](const request& req, response& res) {
+		server.set_http_handler<GET, POST>("/close", [&](request& req, response& res) {
 			res.set_status_and_content(status_type::ok, "will close");
 
 			is_running = false;
@@ -435,6 +298,8 @@ cinatra目前刚开始在生产环境中使用, 还处于开发完善阶段，�
 # 联系方式
 
 purecpp@163.com
+
+qq群：340713904
 
 [http://purecpp.org/](http://purecpp.org/ "purecpp")
 

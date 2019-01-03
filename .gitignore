@@ -2,6 +2,10 @@
 *.d
 .idea
 cmake-build-debug
+<<<<<<< HEAD
+=======
+.vscode
+>>>>>>> offical/master
 # Compiled Object files
 *.slo
 *.lo

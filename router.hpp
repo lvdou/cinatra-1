@@ -38,7 +38,11 @@ namespace cinatra {
 
 			auto it = map_invokers_.find(key);
 			if (it == map_invokers_.end()) {
-				return false;
+				// default to '/'
+				it = map_invokers_.find("/");
+				if (it == map_invokers_.end()) {
+					return false;
+				}
 			}
 
 			it->second(args...);

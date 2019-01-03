@@ -1,4 +1,4 @@
-//
+﻿//
 // Created by qiyu on 12/19/17.
 //
 
@@ -15,6 +15,7 @@
 #include <cctype>
 #include <type_traits>
 #include <algorithm>
+#include <map>
 #include <iostream>
 #include "define.h"
 
@@ -174,7 +175,7 @@ namespace cinatra {
 			return false;
 
 		for (size_t i = 0; i < l; i++) {
-			if (std::tolower(s[i]) != t[i])
+			if (std::tolower(s[i]) != std::tolower(t[i]))
 				return false;
 		}
 
@@ -254,7 +255,8 @@ namespace cinatra {
 	static std::string form_urldecode(const std::string &src) {
 		std::string ret;
 		char ch;
-		int i, ii;
+		std::uint32_t i;
+		int ii;
 		for (i = 0; i<src.length(); i++) {
 			if (int(src[i]) == 37) {
 				sscanf(src.substr(i + 1, 2).c_str(), "%x", &ii);
