@@ -380,6 +380,7 @@ namespace cinatra {
 		}
 
 		bool parse_form_urlencoded() {
+			std::cout<<"call parse_form_urlencoded()"<<std::endl;
 			form_url_map_.clear();
 #ifdef CINATRA_ENABLE_GZIP
 			if (has_gzip_) {
@@ -397,6 +398,7 @@ namespace cinatra {
 		}
 
 		int parse_chunked(size_t bytes_transferred) {
+			std::cout<<"call parse_chunked()"<<std::endl;
 			auto str = std::string_view(&buf_[header_len_], bytes_transferred - header_len_);
 
 			return -1;
@@ -659,6 +661,7 @@ namespace cinatra {
 
 		void on(data_proc_state event_type, event_call_back&& event_call_back)
 		{
+			std::cout<<"call request::on()"<<std::endl;
 			event_call_backs_[(size_t)event_type] = std::move(event_call_back);
 		}
 

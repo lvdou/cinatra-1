@@ -368,7 +368,7 @@ namespace cinatra {
                 res.set_url(req.get_url());
 				bool success = http_router_.route(req.get_method(), req.get_url(), req, res);
 				if (!success) {
-					res.set_status_and_content(status_type::bad_request, "the url is not right");
+					res.set_status_and_content(status_type::bad_request, "the url is not right ....");
 				}
 			};
 		}

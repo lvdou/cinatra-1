@@ -26,12 +26,14 @@ namespace cinatra {
 
 		template <http_method... Is, class T, class Type, typename T1>
 		void register_handler(std::string_view name, Type T::* f, T1 t) {
+			std::cout<<"call register_handler(std::string_view name, Type T::* f, T1 t)"<<std::endl;
 			register_handler_impl<Is...>(name, f, t);
 		}
 
 		bool route(std::string_view method, std::string_view url, Args... args) {
-			if (map_invokers_.empty())
-				return false;
+			if (map_invokers_.empty()){
+                return false;
+			}
 
 			std::string key(method.data(), method.length());
 			key += std::string(url.data(), url.length());
@@ -39,7 +41,9 @@ namespace cinatra {
 			auto it = map_invokers_.find(key);
 			if (it == map_invokers_.end()) {
 				// default to '/'
-				it = map_invokers_.find("/");
+				key = std::string(method.data(), method.length());
+				key += "/";
+				it = map_invokers_.find(key);
 				if (it == map_invokers_.end()) {
 					return false;
 				}
