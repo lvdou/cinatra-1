@@ -1,5 +1,9 @@
 # cinatra--一个高效易用的c++ http框架
 
+<p align="center">
+  <a href="https://github.com/qicosmos/cinatra/tree/master/lang/english">English</a> | <span>中文</span>
+</p>
+
 # 目录
 
 * [cinatra简介](#cinatra简介)
@@ -39,7 +43,7 @@ cinatra是header-only的，直接引用头文件既可。
 
 ## 示例1：一个简单的hello world
 
-	#include "http_server.hpp"
+	#include "cinatra.hpp"
 	using namespace cinatra;
 	
 	int main() {
@@ -58,7 +62,7 @@ cinatra是header-only的，直接引用头文件既可。
 
 ## 示例2：展示如何取header和query以及错误返回
 
-	#include "http_server.hpp"
+	#include "cinatra.hpp"
 	using namespace cinatra;
 	
 	int main() {
@@ -86,7 +90,7 @@ cinatra是header-only的，直接引用头文件既可。
 
 ## 示例3：面向切面的http服务器
 
-	#include "http_server.hpp"
+	#include "cinatra.hpp"
 	using namespace cinatra;
 
 	//日志切面
@@ -139,7 +143,7 @@ cinatra目前支持了multipart和octet-stream格式的上传。
 ### multipart文件上传
 
 	#include <atomic>
-	#include "http_server.hpp"
+	#include "cinatra.hpp"
 	using namespace cinatra;
 	
 	int main() {
@@ -167,7 +171,7 @@ cinatra目前支持了multipart和octet-stream格式的上传。
 ### octet-stream文件上传
 
 	#include <atomic>
-	#include "http_server.hpp"
+	#include "cinatra.hpp"
 	using namespace cinatra;
 	
 	int main() {
@@ -197,7 +201,7 @@ cinatra目前支持了multipart和octet-stream格式的上传。
 
 ## 示例6：websocket
 
-	#include "http_server.hpp"
+	#include "cinatra.hpp"
 	using namespace cinatra;
 	
 	int main() {
@@ -237,7 +241,7 @@ cinatra目前支持了multipart和octet-stream格式的上传。
 本代码演示如何使用io_service_inplace，然后自己控制http server的运行线程以及循环。
 使用 [http://[::1]:8080/close] （IPv6） 或者 [http://127.0.0.1:8080/close] (IPv4) 来关闭http server。
 
-	#include "http_server.hpp"
+	#include "cinatra.hpp"
 	using namespace cinatra;
 
 	int main() {
@@ -279,7 +283,7 @@ ab测试：ab -c100 -n5000 127.0.0.1:8080/
 
 # 注意事项
 
-文件上传下载，websocket的业务函数是会多次进入的，因此写业务逻辑的时候需要注意，推荐按照示例中的方式去做。
+websocket的业务函数是会多次进入的，因此写业务逻辑的时候需要注意，推荐按照示例中的方式去做。
 
 cinatra目前刚开始在生产环境中使用, 还处于开发完善阶段，可能还有一些bug，因此不建议现阶段直接用于生产环境，建议先在测试环境下试用。
 

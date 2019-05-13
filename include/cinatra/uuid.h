@@ -57,7 +57,7 @@ namespace uuids
          typedef uint32_t digest32_t[5];
          typedef uint8_t digest8_t[20];
 
-         static constexpr unsigned int block_bytes = 64;
+         inline static constexpr unsigned int block_bytes = 64;
 
          inline static uint32_t left_rotate(uint32_t value, size_t const count) 
          {
@@ -596,7 +596,7 @@ namespace uuids
       typedef std::size_t           size_type;
       typedef std::ptrdiff_t        difference_type;
 
-      static constexpr size_t state_size = 16;
+      inline static constexpr size_t state_size = 16;
 
    public:
       constexpr uuid() noexcept {}
@@ -772,14 +772,14 @@ namespace uuids
          << std::setw(2) << (int)id.data[15];
    }
 
-   static  std::string to_string(uuid const & id)
+   inline std::string to_string(uuid const & id)
    {
       std::stringstream sstr;
       sstr << id;
       return sstr.str();
    }
 
-   static std::wstring to_wstring(uuid const & id)
+   inline std::wstring to_wstring(uuid const & id)
    {
       std::wstringstream sstr;
       sstr << id;

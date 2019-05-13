@@ -14,8 +14,12 @@ static int max_age_ = 10 * 60;
 }
 	class session_manager {
 	public:
-		session_manager() = delete;
-		static std::shared_ptr<session> create_session(const std::string& name, std::size_t expire, 
+		static session_manager& get() {
+			static session_manager instance;
+			return instance;
+		}
+
+		std::shared_ptr<session> create_session(const std::string& name, std::size_t expire, 
 			const std::string& path = "/", const std::string& domain = ""){
 			uuids::uuid_random_generator uid{};
 			std::string uuid_str = uid().to_short_str();
@@ -29,7 +33,7 @@ static int max_age_ = 10 * 60;
 			return s;
 		}
 
-		static std::shared_ptr<session> create_session(std::string_view host, const std::string& name,
+		std::shared_ptr<session> create_session(std::string_view host, const std::string& name,
 			std::time_t expire = -1, const std::string &path = "/") {
 			auto pos = host.find(":");
 			if (pos != std::string_view::npos){
@@ -39,21 +43,21 @@ static int max_age_ = 10 * 60;
 			return create_session(name, expire, path, std::string(host.data(), host.length()));
 		}
 
-		static std::weak_ptr<session> get_session(const std::string& id) {
-			std::unique_lock<std::mutex> lock(session_manager_detail::mtx_);
-			auto it = session_manager_detail::map_.find(id);
-			return (it != session_manager_detail::map_.end()) ? it->second : nullptr;
+		std::weak_ptr<session> get_session(const std::string& id) {
+			std::unique_lock<std::mutex> lock(mtx_);
+			auto it = map_.find(id);
+			return (it != map_.end()) ? it->second : nullptr;
 		}
 
-		static void del_session(const std::string& id) {
-			std::unique_lock<std::mutex> lock(session_manager_detail::mtx_);
-			auto it = session_manager_detail::map_.find(id);
-			if (it != session_manager_detail::map_.end())
-				session_manager_detail::map_.erase(it);
+		void del_session(const std::string& id) {
+			std::unique_lock<std::mutex> lock(mtx_);
+			auto it = map_.find(id);
+			if (it != map_.end())
+				map_.erase(it);
 		}
 
-		static void check_expire() {
-			if (session_manager_detail::map_.empty())
+		void check_expire() {
+			if (map_.empty())
 				return;
 
 			auto now = std::time(nullptr);
@@ -68,17 +72,18 @@ static int max_age_ = 10 * 60;
 			}
 		}
 
-		static void set_max_inactive_interval(int seconds) {
-			session_manager_detail::max_age_ = seconds;
+		void set_max_inactive_interval(int seconds) {
+			max_age_ = seconds;
 		}
 
-	private:	
-		//static std::map<std::string, std::shared_ptr<session>> map_;
-		//static std::mutex mtx_;
-		//static int max_age_;
+	private:
+		session_manager() = default;
+		session_manager(const session_manager&) = delete;
+		session_manager(session_manager&&) = delete;
+
+		std::map<std::string, std::shared_ptr<session>> map_;
+		std::mutex mtx_;
+		int max_age_ = 0;
 	};
-	//std::map<std::string, std::shared_ptr<session>> session_manager::map_;
-	//std::mutex session_manager::mtx_;
-	//int session_manager::max_age_ = 0;
 }
 #endif //CINATRA_SESSION_UTILS_HPP

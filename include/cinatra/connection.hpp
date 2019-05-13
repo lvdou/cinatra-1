@@ -245,22 +245,28 @@ private:
 			return;
 		}
 
-		check_keep_alive();
-		if (ret == parse_status::not_complete) { //4.2 not completed, continue read
-			//do_read();
-			do_read_head();
-		}
-		else {
-			if (req_.get_method() == "GET"&&http_cache::need_cache(req_.get_url())&&!http_cache::not_cache(req_.get_url())) {
-				auto raw_url = req_.raw_url();
-				if (!http_cache::empty()) {
-					auto resp_vec = http_cache::get(std::string(raw_url.data(), raw_url.length()));
-					//write back cache
-					if (!resp_vec.empty()) {
-						std::vector<boost::asio::const_buffer> buffers;
-						for(auto &iter:resp_vec)
-						{
-							buffers.emplace_back(boost::asio::buffer(iter.data(),iter.size()));
+			check_keep_alive();
+			if (ret == parse_status::not_complete) { //4.2 not completed, continue read
+				//do_read();
+				do_read_head();
+			}
+			else {
+				if (req_.get_method() == "GET"&&http_cache::get().need_cache(req_.get_url())&&!http_cache::get().not_cache(req_.get_url())) {
+					auto raw_url = req_.raw_url();
+					if (!http_cache::get().empty()) {
+						auto resp_vec = http_cache::get().get(std::string(raw_url.data(), raw_url.length()));
+						//write back cache
+						if (!resp_vec.empty()) {
+							std::vector<boost::asio::const_buffer> buffers;
+							for(auto &iter:resp_vec)
+							{
+								buffers.emplace_back(boost::asio::buffer(iter.data(),iter.size()));
+							}
+							boost::asio::async_write(socket_, buffers,
+								[self = this->shared_from_this(), resp_vec = std::move(resp_vec)](const boost::system::error_code& ec, std::size_t bytes_transferred) {
+								self->handle_write(ec);
+							});
+							return;
 						}
 						boost::asio::async_write(socket_, buffers,
 												 [self = this->shared_from_this(), resp_vec = std::move(resp_vec)](const boost::system::error_code& ec, std::size_t bytes_transferred) {
@@ -345,10 +351,26 @@ private:
 			return;
 		}
 
-		//cache
-		if (req_.get_method() == "GET"&&http_cache::need_cache(req_.get_url()) && !http_cache::not_cache(req_.get_url())) {
-			auto raw_url = req_.raw_url();
-			http_cache::add(std::string(raw_url.data(), raw_url.length()), res_.raw_content());
+		void do_write() {
+			reset_timer();
+			//auto content_length = res_.get_header_value("content-length");
+			//assert(!content_length.empty());
+			std::vector<boost::asio::const_buffer> buffers = res_.to_buffers();
+			if (buffers.empty()) {
+				handle_write(boost::system::error_code{});
+				return;
+			}
+
+			//cache
+			if (req_.get_method() == "GET"&&http_cache::get().need_cache(req_.get_url()) && !http_cache::get().not_cache(req_.get_url())) {
+				auto raw_url = req_.raw_url();
+				http_cache::get().add(std::string(raw_url.data(), raw_url.length()), res_.raw_content());
+			}
+
+			boost::asio::async_write(socket_, buffers,
+				[self = this->shared_from_this()](const boost::system::error_code& ec, std::size_t bytes_transferred) {
+				self->handle_write(ec);
+			});
 		}
 
 		boost::asio::async_write(socket_, buffers,
@@ -632,80 +654,29 @@ private:
 			call_back();
 			do_write();
 		}
-		else {
-			req_.set_current_size(0);
-			do_read_multipart();
-		}
-	}
 
-	void do_read_multipart() {
-		reset_timer();
+		//-------------web socket----------------//
+		void response_handshake() {
+			std::vector<boost::asio::const_buffer> buffers = res_.to_buffers();
+			if (buffers.empty()) {
+				close();
+				return;
+			}
 
-		req_.fit_size();
-		auto self = this->shared_from_this();
-		boost::asio::async_read(socket_, boost::asio::buffer(req_.buffer(), req_.left_body_len()),
-								[self, this](boost::system::error_code ec, std::size_t length) {
-									if (ec) {
-										req_.set_state(data_proc_state::data_error);
-										call_back();
-										response_back(status_type::bad_request, "mutipart error");
-										return;
-									}
+			auto self = this->shared_from_this();
+			boost::asio::async_write(socket_, buffers, [this, self](const boost::system::error_code& ec, std::size_t length) {
+				if (ec) {
+					close();
+					return;
+				}
 
-									bool has_error = parse_multipart(0, length);
+				req_.set_state(data_proc_state::data_begin);
+				call_back();
+				req_.call_event(req_.get_state());
 
-									if (has_error) { //parse error
-										keep_alive_ = false;
-										response_back(status_type::bad_request, "mutipart error");
-										return;
-									}
-
-									if (req_.body_finished()) {
-										//call_back();
-										do_write();
-										return;
-									}
-
-									req_.set_current_size(0);
-									do_read_part_data();
-								});
-	}
-
-	void do_read_part_data() {
-		auto self = this->shared_from_this();
-		boost::asio::async_read(socket_, boost::asio::buffer(req_.buffer(), req_.left_body_size()),
-								[self, this](boost::system::error_code ec, std::size_t length) {
-									if (ec) {
-										req_.set_state(data_proc_state::data_error);
-										call_back();
-										return;
-									}
-
-									bool has_error = parse_multipart(0, length);
-
-									if (has_error) {
-										response_back(status_type::bad_request, "mutipart error");
-										return;
-									}
-
-									if (!req_.body_finished()) {
-										do_read_part_data();
-									}
-									else {
-										//response_back(status_type::ok, "multipart finished");
-										do_write();
-									}
-								});
-	}
-	//-------------multipart----------------------//
-
-	void handle_header_request() {
-		if (is_upgrade_) { //websocket
-			req_.set_http_type(content_type::websocket);
-			//timer_.cancel();
-			ws_.upgrade_to_websocket(req_, res_);
-			response_handshake();
-			return;
+				req_.set_current_size(0);
+				do_read_websocket_head(SHORT_HEADER);
+			});
 		}
 
 		bool r = handle_gzip();

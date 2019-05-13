@@ -55,7 +55,7 @@ namespace cinatra {
 				buffers.emplace_back(boost::asio::buffer(content_.data(), content_.size()));
 			}
 
-			if (http_cache::need_cache(raw_url_)) {
+			if (http_cache::get().need_cache(raw_url_)) {
 				cache_data.clear();
 				for (auto& buf : buffers) {
 					cache_data.push_back(std::string(boost::asio::buffer_cast<const char*>(buf),boost::asio::buffer_size(buf)));
@@ -193,13 +193,13 @@ namespace cinatra {
 
         std::shared_ptr<cinatra::session> start_session(const std::string& name, std::time_t expire = -1,std::string_view domain = "", const std::string &path = "/")
 		{
-			session_ = session_manager::create_session(domain, name, expire, path);
+			session_ = session_manager::get().create_session(domain, name, expire, path);
 			return session_;
 		}
 
 		std::shared_ptr<cinatra::session> start_session()
 		{
-			session_ = session_manager::create_session(domain_, CSESSIONID);
+			session_ = session_manager::get().create_session(domain_, CSESSIONID);
 			return session_;
 		}
 
@@ -354,9 +354,7 @@ namespace cinatra {
 		std::string_view path_;
 		std::shared_ptr<cinatra::session> session_ = nullptr;
 		nlohmann::json tmpl_json_data_;
-		//static std::atomic_int counter_;
+		inline static std::atomic_int counter_ = 0;
 	};
-
-	//std::atomic_int response::counter_ = 0;
 }
 #endif //CINATRA_RESPONSE_HPP

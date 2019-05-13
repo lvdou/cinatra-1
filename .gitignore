@@ -35,3 +35,9 @@ cmake-build-debug
 *.exe
 *.out
 *.app
+
+# Eclipse
+/build/
+.project
+.cproject
+.settings

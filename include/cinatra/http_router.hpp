@@ -65,7 +65,7 @@ namespace cinatra {
 					path += std::string(url.data(), url.length());
 			}
 			else {
-				path += std::string(STAIC_RES.data(), STAIC_RES.length());
+				key += std::string(STATIC_RESOURCE.data(), STATIC_RESOURCE.length());
 				is_static_res_flag = true;
 			}
 
@@ -74,7 +74,7 @@ namespace cinatra {
 				return get_wildcard_function(path, req, res);
 			}
 			if(is_static_res_flag==false)
-				session_manager::check_expire();
+				session_manager::get().check_expire();
 			it->second(req, res);
 			return true;
 		}
