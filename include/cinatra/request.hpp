@@ -49,6 +49,7 @@ namespace cinatra {
 
 		int parse_header(std::size_t last_len) {
 			using namespace std::string_view_literals;
+			copy_headers_.clear();
 			num_headers_ = sizeof(headers_) / sizeof(headers_[0]);
 			header_len_ = phr_parse_request(buf_.data(), cur_size_, &method_,
 				&method_len_, &url_, &url_len_,
@@ -68,7 +69,7 @@ namespace cinatra {
 				body_len_ = 0;
 			}
 			else {
-				set_body_len(atoi(header_value.data()));
+				set_body_len(atoll(header_value.data()));
 			}
 
 			auto cookie = get_header_value("cookie");
@@ -191,6 +192,7 @@ namespace cinatra {
 			is_range_resource_ = false;
 			range_start_pos_ = 0;
 			static_resource_file_size_ = 0;
+			copy_headers_.clear();
 		}
 
 		void fit_size() {
@@ -261,17 +263,47 @@ namespace cinatra {
 		void set_current_size(size_t size) {
 			cur_size_ = size;
 			if (size == 0) {
-				copy_method_url();
+				copy_method_url_headers();
 			}
 		}
 
 		std::string_view get_header_value(std::string_view key) const {
-			for (size_t i = 0; i < num_headers_; i++) {
-				if (iequal(headers_[i].name, headers_[i].name_len, key.data()))
-					return std::string_view(headers_[i].value, headers_[i].value_len);
+			if (copy_headers_.empty()) {
+				for (size_t i = 0; i < num_headers_; i++) {
+					if (iequal(headers_[i].name, headers_[i].name_len, key.data()))
+						return std::string_view(headers_[i].value, headers_[i].value_len);
+				}
+
+				return {};
+			}
+
+			auto it = std::find_if(copy_headers_.begin(), copy_headers_.end(), [key] (auto& pair){
+				if (iequal(pair.first.data(), pair.first.size(), key.data())) {
+					return true;
+				}
+
+				return false;
+			});
+
+			if (it != copy_headers_.end()) {
+				return (*it).second;
 			}
 
 			return {};
+		}
+
+		std::pair<phr_header*, size_t> get_headers() {
+			if(copy_headers_.empty())
+				return { headers_ , num_headers_ };
+
+			num_headers_ = copy_headers_.size();
+			for (size_t i = 0; i < num_headers_; i++) {
+				headers_[i].name = copy_headers_[i].first.data();
+				headers_[i].name_len = copy_headers_[i].first.size();
+				headers_[i].value = copy_headers_[i].second.data();
+				headers_[i].value_len = copy_headers_[i].second.size();
+			}
+			return { headers_ , num_headers_ };
 		}
 
         std::string get_multipart_field_name(const std::string& field_name) const {
@@ -334,10 +366,21 @@ namespace cinatra {
                 return false;
             }
 
-			return multipart_headers_.find("Content-Type") != multipart_headers_.end();
+			bool has_content_type = (multipart_headers_.find("Content-Type") != multipart_headers_.end());
+			auto it = multipart_headers_.find("Content-Disposition");
+			bool has_content_disposition = (it != multipart_headers_.end());
+			if (has_content_disposition) {
+				if (it->second.find("filename") != std::string::npos) {
+					return true;
+				}
+
+				return false;
+			}
+
+			return has_content_type|| has_content_disposition;
         }
 
-		void set_multipart_headers(const std::multimap<std::string_view, std::string_view>& headers) {
+		void set_multipart_headers(const multipart_headers& headers) {
 			for (auto pair : headers) {
 				multipart_headers_[std::string(pair.first.data(), pair.first.size())] = std::string(pair.second.data(), pair.second.size());
 			}
@@ -376,6 +419,10 @@ namespace cinatra {
 				val = trim(val);
 				query.emplace(key, val);
 			}
+			else if((length - pos) == 0) {
+				query.emplace(key, "");
+			}
+
 			return query;
 		}
 
@@ -517,6 +564,42 @@ namespace cinatra {
 			}
 
 			return {};
+		}
+
+		template<typename T>
+		T get_query_value(std::string_view key) {
+			static_assert(std::is_arithmetic_v<T>);
+			auto val = get_query_value(key);
+			if (val.empty()) {
+				throw std::logic_error("empty value");
+			}
+
+			if constexpr (std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t> ||
+				std::is_same_v<T, bool> || std::is_same_v<T, char> || std::is_same_v<T, short>) {
+				int r = std::atoi(val.data());
+				if (val[0] != '0' && r == 0) {
+					throw std::invalid_argument(std::string(val) +": is not an integer");
+				}
+				return r;
+			}
+			else if constexpr (std::is_same_v<T, int64_t>|| std::is_same_v<T, uint64_t>) {
+				auto r = std::atoll(val.data());
+				if (val[0] != '0' && r == 0) {
+					throw std::invalid_argument(std::string(val) + ": is not an integer");
+				}
+				return r;
+			}
+			else if constexpr (std::is_floating_point_v<T>) {
+				char* end;
+				auto f = strtof(val.data(), &end);
+				if (val.back() != *(end-1)) {
+					throw std::invalid_argument(std::string(val) + ": is not a float");
+				}
+				return f;
+			}
+			else {
+				throw std::invalid_argument("not support the value type");
+			}
 		}
 
 		std::string_view get_query_value(std::string_view key){
@@ -690,11 +773,11 @@ namespace cinatra {
 		}
 
 		void resize(size_t size) {
-			copy_method_url();
+			copy_method_url_headers();
 			buf_.resize(size);
 		}
 
-		void copy_method_url() {
+		void copy_method_url_headers() {
 			if (method_len_ == 0)
 				return;
 
@@ -703,6 +786,14 @@ namespace cinatra {
 			method_len_ = 0;
 			url_len_ = 0;
 			multipart_headers_.clear();
+
+			if (header_len_ < 0)
+				return;
+
+			for (size_t i = 0; i < num_headers_; i++) {
+				copy_headers_.emplace_back(std::string(headers_[i].name, headers_[i].name_len), 
+					std::string(headers_[i].value, headers_[i].value_len));
+			}
 		}
 
 		void check_gzip() {
@@ -735,6 +826,7 @@ namespace cinatra {
 		std::string method_str_;
 		std::string url_str_;
 		std::string cookie_str_;
+		std::vector<std::pair<std::string, std::string>> copy_headers_;
 
 		size_t cur_size_ = 0;
 		size_t left_body_len_ = 0;

@@ -37,7 +37,7 @@ struct check {
 
 struct person
 {
-	void foo(request& req, response& res) 
+	void foo(request& req, response& res)
 	{
 		std::cout << i << std::endl;
 		res.render_string("ok");
@@ -53,7 +53,6 @@ struct person
 };
 
 int main() {
-	nanolog::initialize(nanolog::GuaranteedLogger(), "/tmp/", "nanolog", 1);
 	const int max_thread_num = 4;
 	http_server server(max_thread_num);
 #ifdef CINATRA_ENABLE_SSL
@@ -63,10 +62,11 @@ int main() {
 	bool r = server.listen("0.0.0.0", "8080");
 #endif
 	if (!r) {
-		LOG_INFO << "listen failed";
+		//LOG_INFO << "listen failed";
 		return -1;
 	}
 
+	server.set_public_root_directory("");
     server.set_base_path("base_path","/feather");
 	server.enable_http_cache(false);//set global cache
     server.set_res_cache_max_age(86400);
@@ -213,12 +213,17 @@ int main() {
 		});
 	});
 
+	server.set_http_handler<GET, POST>("/vue_html", [](request& req, response& res) {
+		res.render_raw_view("./www/index.html");
+	});
+
+	server.set_http_handler<GET, POST>("/vue_demo", [](request& req, response& res) {
+		res.render_raw_view("./www/dist/index.html");
+	});
 
 	//http upload(multipart)
 	server.set_http_handler<GET, POST>("/upload_multipart", [](request& req, response& res) {
 		assert(req.get_content_type() == content_type::multipart);
-		auto text = req.get_query_value("text");
-		std::cout<<text<<std::endl;
 		auto& files = req.get_upload_files();
 		for (auto& file : files) {
 			std::cout << file.get_file_path() << " " << file.get_file_size() << std::endl;
