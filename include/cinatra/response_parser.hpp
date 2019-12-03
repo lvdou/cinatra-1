@@ -10,7 +10,7 @@ namespace cinatra {
 		response_parser() {
 			buf_.resize(MAX_RESPONSE_SIZE);
 		}
-
+		
 		int parse(int last_len) {
 			int minor_version;
 
@@ -18,6 +18,25 @@ namespace cinatra {
 			const char* msg;
 			size_t msg_len;
 			header_len_ = phr_parse_response(buf_.data(), cur_size_, &minor_version, &status_, &msg, &msg_len, headers_, &num_headers_, last_len);
+			msg_ = { msg, msg_len };
+			auto header_value = get_header_value(headers_, num_headers_, "content-length");
+			if (header_value.empty()) {
+				body_len_ = 0;
+			}
+			else {
+				body_len_ = atoi(header_value.data());
+			}
+
+			return header_len_;
+		}
+
+		int parse(const char* buf, size_t cur_size, int last_len) {
+			int minor_version;
+
+			num_headers_ = sizeof(headers_) / sizeof(headers_[0]);
+			const char* msg;
+			size_t msg_len;
+			header_len_ = phr_parse_response(buf, cur_size, &minor_version, &status_, &msg, &msg_len, headers_, &num_headers_, last_len);
 			msg_ = { msg, msg_len };
 			auto header_value = get_header_value(headers_, num_headers_, "content-length");
 			if (header_value.empty()) {
@@ -44,6 +63,10 @@ namespace cinatra {
 
 		std::string_view body() {
 			return std::string_view(buf_.data() + header_len_, body_len_);
+		}
+
+		int body_len() const {
+			return body_len_;
 		}
 
 		char* buffer() {
@@ -92,6 +115,24 @@ namespace cinatra {
 			}
 
 			return {};
+		}
+
+		bool is_chunked() {
+			if (has_length()) {
+				return false;
+			}
+
+			auto transfer_encoding = get_header_value("transfer-encoding");
+			if (transfer_encoding == "chunked"sv) {
+				return true;
+			}
+
+			return false;
+		}
+
+		bool has_length() {
+			auto header_value = get_header_value("content-length");
+			return !header_value.empty();
 		}
 
 	private:

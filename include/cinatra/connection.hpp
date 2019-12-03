@@ -20,7 +20,7 @@ namespace cinatra {
 	class connection :public std::enable_shared_from_this<connection<socket_type>>, private noncopyable {
 	public:
 		explicit connection(boost::asio::io_service& io_service, std::size_t max_req_size, long keep_alive_timeout,
-			http_handler& handler, std::string& static_dir, std::function<bool(request& req, response& res)>* upload_check=nullptr
+			http_handler& handler, std::string& static_dir, std::function<bool(request& req, response& res)>* upload_check
 #ifdef CINATRA_ENABLE_SSL
 			, boost::asio::ssl::context& ctx
 #endif
@@ -172,6 +172,10 @@ namespace cinatra {
 
 		void response_now() {
 			do_write();
+		}
+
+		void set_multipart_begin(std::function<void(request&, std::string&)> begin) {
+			multipart_begin_ = std::move(begin);
 		}
 
 		//~connection() {
@@ -395,6 +399,7 @@ namespace cinatra {
 		}
 
 		void close() {
+			req_.close_upload_file();
 			boost::system::error_code ec;
 			socket().close(ec);
 			has_shake_ = false;
@@ -584,8 +589,14 @@ namespace cinatra {
 					{
 						auto ext = get_extension(filename);
 						try {
-							std::string name = static_dir_ + uuids::uuid_system_generator{}().to_short_str()
-								+ std::string(ext.data(), ext.length());
+							auto tp = std::chrono::high_resolution_clock::now();
+							auto nano = tp.time_since_epoch().count();
+							std::string name = static_dir_ + std::to_string(nano)
+								+ std::string(ext.data(), ext.length())+"_ing";
+							if (multipart_begin_) {
+								multipart_begin_(req_, name);
+							}
+							
 							req_.open_upload_file(name);
 						}
 						catch (const std::exception& ex) {
@@ -606,7 +617,7 @@ namespace cinatra {
 						req_.write_upload_data(buf, size);
 					}else{
 						auto key = req_.get_multipart_field_name("name");
-						req_.update_multipart_value(key, buf, size);
+						req_.update_multipart_value(std::move(key), buf, size);
 					}
 				};
 				multipart_parser_.on_part_end = [this] {
@@ -615,6 +626,14 @@ namespace cinatra {
 					if(is_multi_part_file_)
 					{
 						req_.close_upload_file();
+						auto pfile = req_.get_file();
+						if (pfile) {
+							auto old_name = pfile->get_file_path();
+							auto pos = old_name.rfind("_ing");
+							if (pos != std::string::npos) {
+								pfile->rename_file(old_name.substr(0, old_name.length() - 4));
+							}							
+						}
 					}
 				};
 				multipart_parser_.on_end = [this] {
@@ -876,7 +895,8 @@ namespace cinatra {
 			case cinatra::ws_frame_type::WS_TEXT_FRAME:
 			case cinatra::ws_frame_type::WS_BINARY_FRAME:
 			{
-				req_.set_part_data({ payload.data(), payload.length() });				
+				reset_timer();
+				req_.set_part_data({ payload.data(), payload.length() });
 				req_.call_event(data_proc_state::data_continue);
 			}
 			//on message
@@ -1131,8 +1151,9 @@ namespace cinatra {
 		bool is_multi_part_file_;
 		//callback handler to application layer
 		const http_handler& http_handler_;
-		std::function<bool(request& req, response& res)>* upload_check_;
+		std::function<bool(request& req, response& res)>* upload_check_ = nullptr;
 		std::any tag_;
+		std::function<void(request&, std::string&)> multipart_begin_ = nullptr;
 	};
 
 	inline constexpr data_proc_state ws_open = data_proc_state::data_begin;

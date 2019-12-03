@@ -2,11 +2,13 @@
 #ifdef _MSC_VER
 #include <filesystem>
 namespace fs = std::filesystem;
+namespace sys = std;
 #else
 //#include <experimental/filesystem>
 //namespace fs = std::experimental::filesystem;
 #include <boost/filesystem.hpp>
 namespace fs = boost::filesystem;
+namespace sys = boost::system;
 #endif
 #include <fstream>
 #include <string>
@@ -20,7 +22,7 @@ namespace cinatra {
 		}
 
 		bool open(const std::string& file_name) {
-			file_.open(file_name, std::ios::binary);
+			file_.open(file_name, std::ios::binary| std::ios::app);
 			bool r = file_.is_open();
 			if(r)
 				file_path_ = std::string(&file_name[0], file_name.length());
@@ -78,10 +80,13 @@ namespace cinatra {
 
 		void rename_file(const std::string& new_file_name)
 		{
-			auto directory_path = file_path_.substr(0,file_path_.rfind("/"));
-			auto new_file_path = directory_path+"/"+new_file_name;
-			fs::rename(file_path_.data(),(new_file_path).data());
-			file_path_ = new_file_path;
+			//auto directory_path = file_path_.substr(0,file_path_.rfind("/"));
+			//auto new_file_path = directory_path+"/"+new_file_name;
+			sys::error_code code;
+			fs::rename(file_path_, new_file_name, code);
+			if (!code) {
+				file_path_ = new_file_name;
+			}			
 		}
 
 
@@ -95,6 +100,10 @@ namespace cinatra {
 
 		std::string get_file_path() const{
 			return file_path_;
+		}
+
+		bool is_open() const {
+			return file_.is_open();
 		}
 
     private:

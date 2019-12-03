@@ -180,6 +180,9 @@ namespace cinatra {
 
 		void reset() {
 			cur_size_ = 0;
+			for (auto& file : files_) {
+				file.close();
+			}
 			files_.clear();
 			is_chunked_ = false;
 			state_ = data_proc_state::data_begin;
@@ -188,6 +191,7 @@ namespace cinatra {
             utf8_character_pathinfo_params_.clear();
             queries_.clear();
 			cookie_str_.clear();
+			form_url_map_.clear();
             multipart_form_map_.clear();
 			is_range_resource_ = false;
 			range_start_pos_ = 0;
@@ -334,7 +338,14 @@ namespace cinatra {
             multipart_form_map_.emplace(key,value);
         }
 
-		void update_multipart_value(const std::string& key, const char* buf, size_t size) {
+		void update_multipart_value(std::string key, const char* buf, size_t size) {
+			if (!key.empty()) {
+				last_multpart_key_ = key;
+			}
+			else {
+				key = last_multpart_key_;
+			}
+
 			auto it = multipart_form_map_.find(key);
 			if (it != multipart_form_map_.end()) {
 				multipart_form_map_[key] += std::string(buf, size);
@@ -678,6 +689,13 @@ namespace cinatra {
 			return files_;
 		}
 
+		upload_file* get_file() {
+			if(!files_.empty())
+				return &files_.back();
+
+			return nullptr;
+		}
+
 		std::map<std::string_view, std::string_view> get_cookies() const
 		{
 			//auto cookies_str = get_header_value("cookie");
@@ -785,7 +803,12 @@ namespace cinatra {
 			url_str_ = std::string(url_, url_len_);
 			method_len_ = 0;
 			url_len_ = 0;
+
+			auto filename = get_multipart_field_name("filename");
 			multipart_headers_.clear();
+			if (!filename.empty()) {
+				copy_headers_.emplace_back("filename", std::move(filename));
+			}			
 
 			if (header_len_ < 0)
 				return;
@@ -844,6 +867,7 @@ namespace cinatra {
 		content_type http_type_ = content_type::unknown;
 
 		std::map<std::string, std::string> multipart_headers_;
+		std::string last_multpart_key_;
 		std::vector<upload_file> files_;
 		std::map<std::string,std::string> utf8_character_params_;
 		std::map<std::string,std::string> utf8_character_pathinfo_params_;

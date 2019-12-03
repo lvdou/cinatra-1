@@ -2,10 +2,8 @@
 *.d
 .idea
 cmake-build-debug
-<<<<<<< HEAD
-=======
 .vscode
->>>>>>> offical/master
+*.swp
 # Compiled Object files
 *.slo
 *.lo
@@ -41,3 +39,5 @@ cmake-build-debug
 .project
 .cproject
 .settings
+
+/example/build/

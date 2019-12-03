@@ -116,7 +116,7 @@ namespace cinatra {
 		}
 
 		void run() {
-			if (!fs::exists(public_root_path_.data())) {
+			if (!public_root_path_.empty() && !fs::exists(public_root_path_.data())) {
 				fs::create_directories(public_root_path_.data());
 			}
 
@@ -221,7 +221,7 @@ namespace cinatra {
 				public_root_path_ = "./"+name+"/";
 			}
 			else {
-				public_root_path_ = "./";
+				public_root_path_ = "";
 			}
         }
 
@@ -243,6 +243,14 @@ namespace cinatra {
 			relate_paths_.emplace_back("."+std::move(relate_path));
 		}
 
+		void set_not_found_handler(std::function<void(request& req, response& res)> not_found) {
+			not_found_ = std::move(not_found);
+		}
+
+		void set_multipart_begin(std::function<void(request&, std::string&)> begin) {
+			multipart_begin_ = std::move(begin);
+		}
+
 	private:
 		void start_accept(std::shared_ptr<boost::asio::ip::tcp::acceptor> const& acceptor) {
 			auto new_conn = std::make_shared<connection<Socket>>(
@@ -255,6 +263,7 @@ namespace cinatra {
 			acceptor->async_accept(new_conn->socket(), [this, new_conn, acceptor](const boost::system::error_code& e) {
 				if (!e) {
 					new_conn->socket().set_option(boost::asio::ip::tcp::no_delay(true));
+					new_conn->set_multipart_begin(multipart_begin_);
 					new_conn->start();
 				}
 				else {
@@ -299,6 +308,10 @@ namespace cinatra {
 
 						auto in = std::make_shared<std::ifstream>(relatice_file_name,std::ios_base::binary);
 						if (!in->is_open()) {
+							if (not_found_) {
+								not_found_(req, res);
+								return;
+							}
 							res.set_status_and_content(status_type::not_found,"");
 							return;
 						}
@@ -405,6 +418,10 @@ namespace cinatra {
 				try {
 					bool success = http_router_.route(req.get_method(), req.get_url(), req, res);
 					if (!success) {
+						if (not_found_) {
+							not_found_(req, res);
+							return;
+						}
 						res.set_status_and_content(status_type::bad_request, "the url is not right");
 					}
 				}
@@ -436,6 +453,9 @@ namespace cinatra {
 		std::function<bool(request& req, response& res)> download_check_;
 		std::vector<std::string> relate_paths_;
 		std::function<bool(request& req, response& res)> upload_check_ = nullptr;
+
+		std::function<void(request& req, response& res)> not_found_ = nullptr;
+		std::function<void(request&, std::string&)> multipart_begin_ = nullptr;
 	};
 
 	using http_server = http_server_<io_service_pool>;

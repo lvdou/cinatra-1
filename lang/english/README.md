@@ -288,6 +288,103 @@ int main() {
 }
 ```
 
+### Example 8: cinatra client usage
+
+#### send get/post message
+
+```
+auto client = cinatra::client_factory::instance().new_client("127.0.0.1", "8080");
+client->send_msg("/string", "hello"); //post json, default timeout is 3000ms
+client->send_msg<TEXT>("/string", "hello"); //post string, default timeout is 3000ms
+
+client->send_msg<TEXT, 2000>("/string", "hello"); //post string, timeout is 2000ms
+
+client->send_msg<TEXT, 3000, GET>("/string", "hello"); //get string, timeout is 3000ms
+```
+
+#### upload file
+```
+auto client = cinatra::client_factory::instance().new_client("127.0.0.1", "8080");
+client->on_progress([](std::string progress) {
+	std::cout << progress << "\n";
+});
+
+client->upload_file("/upload_multipart", filename, [](auto ec) {
+	if (ec) {
+		std::cout << "upload failed, reason: "<<ec.message();
+	}
+	else {
+		std::cout << "upload successful\n";
+	}
+});
+```
+
+***upload multiple files***
+
+```
+	for (auto& filename : v) {
+
+		auto client = cinatra::client_factory::instance().new_client("127.0.0.1", "8080");
+		client->on_progress([](std::string progress) {
+			std::cout << progress << "\n";
+		});
+
+		client->upload_file("/upload_multipart", filename, [](auto ec) {
+			if (ec) {
+				std::cout << "upload failed, reason: "<<ec.message();
+			}
+			else {
+				std::cout << "upload successful\n";
+			}
+		});
+
+	}
+```
+
+#### download file
+
+```
+auto client = cinatra::client_factory::instance().new_client("127.0.0.1", "8080");
+auto s = "/public/static/test1.png";
+auto filename = std::filesystem::path(s).filename().string();
+client->download_file("temp", filename, s, [](auto ec) {
+	if (ec) {
+		std::cout << ec.message() << "\n";
+	}
+	else {
+		std::cout << "ok\n";
+	}
+});
+```
+
+```
+client->on_length([](size_t length){
+	std::cout<<"recieved data length: "<<length<<"\n";
+});
+
+client->on_data([](std::string_view data){
+	std::cout<<"recieved data: "<<data<<"\n";
+});
+```
+
+### simple_client https
+
+```
+	boost::asio::ssl::context ctx(boost::asio::ssl::context::sslv23);
+	ctx.set_default_verify_paths();
+
+	auto client = cinatra::client_factory::instance().new_client("127.0.0.1", "https", ctx);
+	client->on_length([](size_t _length) {
+		std::cout << "download file: on_length: " << _length << std::endl;
+	});
+	client->download_file("test.jpg", "/public/static/test.jpg", [](boost::system::error_code ec) {
+		std::cout << "download file: on_complete: " << (!ec ? "true - " : "false - ") << (ec ? ec.message() : "") << std::endl;
+	});
+
+	std::string ss;
+	std::cin >> ss;
+```
+
 ## Performance
 
 We conducted a simple performance test using the [Apache HTTP benchmarking tool, ab](http://httpd.apache.org/docs/2.2/programs/ab.html).
