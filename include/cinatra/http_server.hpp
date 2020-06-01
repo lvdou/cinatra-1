@@ -4,15 +4,6 @@
 #include <vector>
 #include <string_view>
 
-#ifdef _MSC_VER
-#include <filesystem>
-namespace fs = std::filesystem;
-#else
-//#include <experimental/filesystem>
-//namespace fs = std::experimental::filesystem;
-#include <boost/filesystem.hpp>
-namespace fs = boost::filesystem;
-#endif
 #include "io_service_pool.hpp"
 #include "connection.hpp"
 #include "http_router.hpp"
@@ -32,14 +23,12 @@ namespace cinatra {
 		T value;
 	};
 
-	template<class service_pool_policy = io_service_pool>
+	template<typename ScoketType, class service_pool_policy = io_service_pool>
 	class http_server_ : private noncopyable {
 	public:
+        using type = ScoketType;
 		template<class... Args>
 		explicit http_server_(Args&&... args) : io_service_pool_(std::forward<Args>(args)...)
-#ifdef CINATRA_ENABLE_SSL
-			, ctx_(boost::asio::ssl::context::sslv23)
-#endif
 		{
 			http_cache::get().set_cache_max_age(86400);
 			init_conn_callback();
@@ -49,46 +38,70 @@ namespace cinatra {
 			http_cache::get().enable_cache(b);
 		}
 
-		template<typename F>
-		void init_ssl_context(bool ssl_enable_v3, F&& f, std::string certificate_chain_file,
-			std::string private_key_file, std::string tmp_dh_file) {
-#ifdef CINATRA_ENABLE_SSL
-			unsigned long ssl_options = boost::asio::ssl::context::default_workarounds
-				| boost::asio::ssl::context::no_sslv2
-				| boost::asio::ssl::context::single_dh_use;
+        void set_ssl_conf(ssl_configure conf) {
+            ssl_conf_ = std::move(conf);
+        }
 
-			if (!ssl_enable_v3)
-				ssl_options |= boost::asio::ssl::context::no_sslv3;
+        bool port_in_use(unsigned short port) {
+            using namespace boost::asio;
+            using ip::tcp;
 
-			ctx_.set_options(ssl_options);
-			ctx_.set_password_callback(std::forward<F>(f));
-			ctx_.use_certificate_chain_file(std::move(certificate_chain_file));
-			ctx_.use_private_key_file(std::move(private_key_file), boost::asio::ssl::context::pem);
-			ctx_.use_tmp_dh_file(std::move(tmp_dh_file));
+            io_service svc;
+            tcp::acceptor acept(svc);
+
+            boost::system::error_code ec;
+            acept.open(tcp::v4(), ec);
+#ifndef _WIN32
+            acept.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true), ec);
 #endif
-		}
+            acept.bind({ tcp::v4(), port }, ec);
+
+            return ec == error::address_in_use;
+        }
 
 		//address :
 		//		"0.0.0.0" : ipv4. use 'https://localhost/' to visit
 		//		"::1" : ipv6. use 'https://[::1]/' to visit
 		//		"" : ipv4 & ipv6.
 		bool listen(std::string_view address, std::string_view port) {
+            if (port_in_use(atoi(port.data()))) {
+                return false;
+            }
+
 			boost::asio::ip::tcp::resolver::query query(address.data(), port.data());
-			return listen(query);
+            auto [r, err_msg] = listen(query);
+            return r;
 		}
+
+        bool listen(std::string_view address, std::string_view port, std::string& error_msg) {
+            if (port_in_use(atoi(port.data()))) {
+                error_msg = std::string("port: ") + std::string(port) + " is in use!";
+                return false;
+            }
+
+            boost::asio::ip::tcp::resolver::query query(address.data(), port.data());
+            auto [r, err_msg] = listen(query);
+            error_msg = std::move(err_msg);
+            return r;
+        }
 
 		//support ipv6 & ipv4
 		bool listen(std::string_view port) {
+            if (port_in_use(atoi(port.data()))) {
+                return false;
+            }
+
 			boost::asio::ip::tcp::resolver::query query(port.data());
-			return listen(query);
+			auto [r, err_msg] = listen(query);
+            return r;
 		}
 
-		bool listen(const boost::asio::ip::tcp::resolver::query & query) {
+		std::pair<bool, std::string> listen(const boost::asio::ip::tcp::resolver::query & query) {
 			boost::asio::ip::tcp::resolver resolver(io_service_pool_.get_io_service());
 			boost::asio::ip::tcp::resolver::iterator endpoints = resolver.resolve(query);
 
 			bool r = false;
-
+            std::string err_msg;
 			for (; endpoints != boost::asio::ip::tcp::resolver::iterator(); ++endpoints) {
 				boost::asio::ip::tcp::endpoint endpoint = *endpoints;
 
@@ -103,12 +116,14 @@ namespace cinatra {
 					r = true;
 				}
 				catch (const std::exception& ex) {
-					std::cout << ex.what() << "\n";
-					//LOG_INFO << e.what();
+                    err_msg = ex.what();
+#ifdef DEBUG
+                    std::cout << ex.what() << "\n";
+#endif // DEBUG
 				}
 			}
 
-			return r;
+            return { r, std::move(err_msg) };
 		}
 
 		void stop() {
@@ -116,13 +131,8 @@ namespace cinatra {
 		}
 
 		void run() {
-			if (!public_root_path_.empty() && !fs::exists(public_root_path_.data())) {
-				fs::create_directories(public_root_path_.data());
-			}
-
-			if (!fs::exists(static_dir_.data())) {
-				fs::create_directories(static_dir_.data());
-			}
+            init_dir(static_dir_);
+            init_dir(upload_dir_);
 
 			io_service_pool_.run();
 		}
@@ -139,9 +149,13 @@ namespace cinatra {
 			return io_service_pool_.poll_one();
 		}
 
-		void set_static_dir(std::string&& path) {
-			static_dir_ = public_root_path_+std::move(path)+"/";
+		void set_static_dir(std::string path) {
+            set_file_dir(std::move(path), static_dir_);
 		}
+
+        void set_upload_dir(std::string path) {
+            set_file_dir(std::move(path), upload_dir_);
+        }
 
 		const std::string& static_dir() const {
 			return static_dir_;
@@ -188,12 +202,6 @@ namespace cinatra {
 			}
 		}
 
-        void set_base_path(const std::string& key,const std::string& path)
-        {
-            base_path_[0] = std::move(key);
-            base_path_[1] = std::move(path);
-        }
-
         void set_res_cache_max_age(std::time_t seconds)
         {
             static_res_cache_max_age_ = seconds;
@@ -213,22 +221,6 @@ namespace cinatra {
 		{
 			return http_cache::get().get_cache_max_age();
 		}
-
-		//don't begin with "./" or "/", not absolutely path
-		void set_public_root_directory(const std::string& name)
-        {
-        	if(!name.empty()){
-				public_root_path_ = "./"+name+"/";
-			}
-			else {
-				public_root_path_ = "";
-			}
-        }
-
-        std::string get_public_root_directory()
-        {
-            return public_root_path_;
-        }
 
 		void set_download_check(std::function<bool(request& req, response& res)> checker) {
 			download_check_ = std::move(checker);
@@ -251,20 +243,56 @@ namespace cinatra {
 			multipart_begin_ = std::move(begin);
 		}
 
+        void set_validate(size_t max_header_len, check_header_cb check_headers) {
+            max_header_len_ = max_header_len;
+            check_headers_ = std::move(check_headers);
+        }
+
+		void enable_timeout(bool enable){
+			enable_timeout_ = enable;
+		}
+
+        void enable_response_time(bool enable) {
+            need_response_time_ = enable;
+        }
+
+        void set_transfer_type(transfer_type type) {
+            transfer_type_ = type;
+        }
+
+        void on_connection(std::function<bool(std::shared_ptr<connection<ScoketType>>)> on_conn) {
+            on_conn_ = std::move(on_conn);
+        }
+
 	private:
 		void start_accept(std::shared_ptr<boost::asio::ip::tcp::acceptor> const& acceptor) {
-			auto new_conn = std::make_shared<connection<Socket>>(
-				io_service_pool_.get_io_service(), max_req_buf_size_, keep_alive_timeout_, http_handler_, static_dir_,
+			auto new_conn = std::make_shared<connection<ScoketType>>(
+				io_service_pool_.get_io_service(), ssl_conf_, max_req_buf_size_, keep_alive_timeout_, http_handler_, upload_dir_,
 				upload_check_?&upload_check_ : nullptr
-#ifdef CINATRA_ENABLE_SSL
-				, ctx_
-#endif
-				);
-			acceptor->async_accept(new_conn->socket(), [this, new_conn, acceptor](const boost::system::error_code& e) {
+			);
+
+			acceptor->async_accept(new_conn->tcp_socket(), [this, new_conn, acceptor](const boost::system::error_code& e) {
 				if (!e) {
-					new_conn->socket().set_option(boost::asio::ip::tcp::no_delay(true));
-					new_conn->set_multipart_begin(multipart_begin_);
-					new_conn->start();
+					new_conn->tcp_socket().set_option(boost::asio::ip::tcp::no_delay(true));
+                    if (multipart_begin_) {
+                        new_conn->set_multipart_begin(multipart_begin_);
+                    }
+					
+                    new_conn->enable_response_time(need_response_time_);
+					new_conn->enable_timeout(enable_timeout_);
+
+                    if (check_headers_) {
+                        new_conn->set_validate(max_header_len_, check_headers_);
+                    }
+
+                    if (!on_conn_) {
+                        new_conn->start();                        
+                    }
+                    else {
+                        if (on_conn_(new_conn)) {
+                            new_conn->start();
+                        }
+                    }
 				}
 				else {
 					//LOG_INFO << "server::handle_accept: " << e.message();
@@ -279,34 +307,21 @@ namespace cinatra {
 			set_http_handler<POST,GET>(STATIC_RESOURCE, [this](request& req, response& res){
 				if (download_check_) {
 					bool r = download_check_(req, res);
-					if (!r)
+					if (!r) {
+						res.set_status_and_content(status_type::bad_request);
 						return;
+					}						
 				}
 
 				auto state = req.get_state();
 				switch (state) {
 					case cinatra::data_proc_state::data_begin:
 					{
-						std::string relatice_file_name = req.get_relative_filename();
-						auto mime = req.get_mime({ relatice_file_name.data(), relatice_file_name.length()});
-						std::wstring source_path = fs::absolute(relatice_file_name).filename().wstring();
-						std::wstring root_path = fs::absolute(public_root_path_).filename().wstring();
-						if(source_path.find(fs::absolute(root_path).filename().wstring()) ==std::string::npos){
-							auto it = std::find_if(relate_paths_.begin(), relate_paths_.end(), [this, &relatice_file_name](auto& str) {
-								auto pos = relatice_file_name.find(str);
-								if (pos != std::string::npos) {
-									relatice_file_name = relatice_file_name.replace(0, str.size(),
-										public_root_path_.substr(0, public_root_path_.size() - 1));
-								}
-								return pos !=std::string::npos;
-							});
-							if (it == relate_paths_.end()) {
-								res.set_status_and_content(status_type::forbidden);
-								return;
-							}
-						}
+						std::string relative_file_name = req.get_relative_filename();
+						std::string fullpath = static_dir_ + relative_file_name;
 
-						auto in = std::make_shared<std::ifstream>(relatice_file_name,std::ios_base::binary);
+						auto mime = req.get_mime(relative_file_name);
+						auto in = std::make_shared<std::ifstream>(fullpath, std::ios_base::binary);
 						if (!in->is_open()) {
 							if (not_found_) {
 								not_found_(req, res);
@@ -316,22 +331,30 @@ namespace cinatra {
 							return;
 						}
 
+                        req.get_conn<ScoketType>()->set_tag(in);
+                        
 						if(is_small_file(in.get(),req)){
 							send_small_file(res, in.get(), mime);
 							return;
 						}
 
-						write_chunked_header(req, in, mime);
+                        if(transfer_type_== transfer_type::CHUNKED)
+						    write_chunked_header(req, in, mime);
+                        else
+                            write_ranges_header(req, mime, fs::path(relative_file_name).filename().string(), std::to_string(fs::file_size(fullpath)));
 					}
 						break;
 					case cinatra::data_proc_state::data_continue:
 					{
-						write_chunked_body(req);
+                        if (transfer_type_ == transfer_type::CHUNKED)
+                            write_chunked_body(req);
+                        else
+                            write_ranges_data(req);
 					}
 						break;
 					case cinatra::data_proc_state::data_end:
 					{
-						auto conn = req.get_conn();
+						auto conn = req.get_conn<ScoketType>();
 						conn->on_close();
 					}
 						break;
@@ -383,8 +406,7 @@ namespace cinatra {
 				std::string max_age = std::string("max-age=") + std::to_string(static_res_cache_max_age_);
 				res_content_header += std::string("\r\n") + std::string("Cache-Control: ") + max_age;
 			}
-			auto conn = req.get_conn();
-			conn->set_tag(in);
+			
 			if(req.is_range())
 			{
 				std::int64_t file_pos  = req.get_range_start_pos();
@@ -392,29 +414,54 @@ namespace cinatra {
 				auto end_str = std::to_string(req.get_request_static_file_size());
 				res_content_header += std::string("\r\n") +std::string("Content-Range: bytes ")+std::to_string(file_pos)+std::string("-")+std::to_string(req.get_request_static_file_size()-1)+std::string("/")+end_str;
 			}
-			conn->write_chunked_header(std::string_view(res_content_header.data(), res_content_header.size()),req.is_range());
+            req.get_conn<ScoketType>()->write_chunked_header(std::string_view(res_content_header),req.is_range());
 		}
 
 		void write_chunked_body(request& req) {
-			auto conn = req.get_conn();
-			auto in = std::any_cast<std::shared_ptr<std::ifstream>>(conn->get_tag());
-			std::string str;
-			const size_t len = 3 * 1024 * 1024;
-			str.resize(len);
-			in->read(&str[0], len);
-			size_t read_len = (size_t)in->gcount();
-			if (read_len != len) {
-				str.resize(read_len);
-			}
-			bool eof = (read_len == 0 || read_len != len);
-			conn->write_chunked_data(std::move(str), eof);
+            const size_t len = 3 * 1024 * 1024;
+            auto str = get_send_data(req, len);
+            auto read_len = str.size();
+            bool eof = (read_len == 0 || read_len != len);
+            req.get_conn<ScoketType>()->write_chunked_data(std::move(str), eof);
 		}
+
+        void write_ranges_header(request& req, std::string_view mime, std::string filename, std::string file_size) {
+            std::string header_str = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-origin: *\r\nAccept-Ranges: bytes\r\n";
+            header_str.append("Content-Disposition: attachment;filename=");
+            header_str.append(std::move(filename)).append("\r\n");
+            header_str.append("Connection: keep-alive\r\n");
+            header_str.append("Content-Type: ").append(mime).append("\r\n");
+            header_str.append("Content-Length: ");
+            header_str.append(file_size).append("\r\n\r\n");
+            req.get_conn<ScoketType>()->write_ranges_header(std::move(header_str));
+        }
+
+        void write_ranges_data(request& req) {
+            const size_t len = 3 * 1024 * 1024;
+            auto str = get_send_data(req, len);
+            auto read_len = str.size();
+            bool eof = (read_len == 0 || read_len != len);
+            req.get_conn<ScoketType>()->write_ranges_data(std::move(str), eof);
+        }
+
+        std::string get_send_data(request& req, const size_t len) {
+            auto conn = req.get_conn<ScoketType>();
+            auto in = std::any_cast<std::shared_ptr<std::ifstream>>(conn->get_tag());
+            std::string str;
+            str.resize(len);
+            in->read(&str[0], len);
+            size_t read_len = (size_t)in->gcount();
+            if (read_len != len) {
+                str.resize(read_len);
+            }
+
+            return str;
+        }
 
 		void init_conn_callback() {
             set_static_res_handler();
 			http_handler_ = [this](request& req, response& res) {
-                res.set_base_path(this->base_path_[0],this->base_path_[1]);
-                res.set_url(req.get_url());
+				res.set_headers(req.get_headers());
 				try {
 					bool success = http_router_.route(req.get_method(), req.get_url(), req, res);
 					if (!success) {
@@ -434,21 +481,52 @@ namespace cinatra {
 			};
 		}
 
+        void set_file_dir(std::string&& path, std::string& dir) {
+            /*
+            default: current path + "www"/"upload"
+            "": current path
+            "./temp", "temp" : current path + temp
+            "/temp" : linux path; "C:/temp" : windows path
+            */
+            if (path.empty()) {
+                dir = fs::current_path().string();
+                return;
+            }
+
+            if (path[0] == '/' || (path.length() >= 2 && path[1] == ':')) {
+                dir = std::move(path);
+            }
+            else {
+                dir = fs::absolute(path).string();
+            }
+        }
+
+        void init_dir(const std::string& dir) {
+            std::error_code ec;
+            bool r = fs::exists(dir, ec);
+            if (ec) {
+                std::cout << ec.message();
+            }
+
+            if (!r) {
+                fs::create_directories(dir, ec);
+                if (ec) {
+                    std::cout << ec.message();
+                }
+            }
+        }
+
 		service_pool_policy io_service_pool_;
 
 		std::size_t max_req_buf_size_ = 3 * 1024 * 1024; //max request buffer size 3M
 		long keep_alive_timeout_ = 60; //max request timeout 60s
 
 		http_router http_router_;
-		std::string static_dir_ = "./public/static/"; //default
-        std::string base_path_[2] = {"base_path","/"};
+		std::string static_dir_ = fs::absolute("www").string(); //default
+        std::string upload_dir_ = fs::absolute("www").string(); //default
         std::time_t static_res_cache_max_age_ = 0;
-        std::string public_root_path_ = "./";
-//		https_config ssl_cfg_;
-#ifdef CINATRA_ENABLE_SSL
-		boost::asio::ssl::context ctx_;
-#endif
 
+		bool enable_timeout_ = true;
 		http_handler http_handler_ = nullptr;
 		std::function<bool(request& req, response& res)> download_check_;
 		std::vector<std::string> relate_paths_;
@@ -456,7 +534,19 @@ namespace cinatra {
 
 		std::function<void(request& req, response& res)> not_found_ = nullptr;
 		std::function<void(request&, std::string&)> multipart_begin_ = nullptr;
+        std::function<bool(std::shared_ptr<connection<ScoketType>>)> on_conn_ = nullptr;
+
+        size_t max_header_len_;
+        check_header_cb check_headers_;
+
+        transfer_type transfer_type_ = transfer_type::CHUNKED;
+        ssl_configure ssl_conf_;
+        bool need_response_time_ = false;
 	};
 
-	using http_server = http_server_<io_service_pool>;
+    template<typename T>
+	using http_server_proxy = http_server_<T, io_service_pool>;
+
+    using http_server = http_server_proxy<NonSSL>;
+    using http_ssl_server = http_server_proxy<SSL>;
 }

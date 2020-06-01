@@ -33,7 +33,6 @@ To compile your code with Cinatra, you need the following:
 1. C++17 compiler (gcc 7.2, clang 4.0, Visual Studio 2017 update 15.5, or later versions)
 2. Boost.Asio (or standalone Asio)
 3. Boost.System
-4. A UUID library (objbase.h for Windows, uuid.h for Linux, CFUUID.h for Mac)
 
 ## Examples
 
@@ -205,7 +204,7 @@ int main() {
 
 cinatra support chunked download files.
 
-Make sure the files are in your resource dictionary(which you could set in the server, such as "./public/static"), and then you could download the fiels directly.
+Make sure the files are in your resource dictionary(which you could set in the server, such as "./public/static"), and then you could download the files directly.
 
 Here is the example:
 
@@ -242,12 +241,8 @@ int main() {
 			std::cout << part_data.data() << std::endl;
 		});
 
-		req.on(ws_close, [](request& req) {
-			std::cout << "websocket close" << std::endl;
-		});
-
 		req.on(ws_error, [](request& req) {
-			std::cout << "websocket error" << std::endl;
+			std::cout << "websocket pack error or network error" << std::endl;
 		});
 	});
 
@@ -290,112 +285,152 @@ int main() {
 
 ### Example 8: cinatra client usage
 
-#### send get/post message
+#### sync_send get/post message
 
 ```
-auto client = cinatra::client_factory::instance().new_client("127.0.0.1", "8080");
-client->send_msg("/string", "hello"); //post json, default timeout is 3000ms
-client->send_msg<TEXT>("/string", "hello"); //post string, default timeout is 3000ms
+void print(const response_data& result) {
+    print(result.ec, result.status, result.resp_body, result.resp_headers.second);
+}
 
-client->send_msg<TEXT, 2000>("/string", "hello"); //post string, timeout is 2000ms
+void test_sync_client() {
+    auto client = cinatra::client_factory::instance().new_client();
+    std::string uri = "http://www.baidu.com";
+    std::string uri1 = "http://cn.bing.com";
+    std::string uri2 = "https://www.baidu.com";
+    std::string uri3 = "https://cn.bing.com";
+    
+    response_data result = client->get(uri);
+    print(result);
 
-client->send_msg<TEXT, 3000, GET>("/string", "hello"); //get string, timeout is 3000ms
+    response_data result1 = client->get(uri1);
+    print(result1);
+
+    print(client->post(uri, "hello"));
+    print(client->post(uri1, "hello"));
+
+#ifdef CINATRA_ENABLE_SSL
+    response_data result2 = client->get(uri2);
+    print(result2);
+
+    response_data result3 = client->get(uri3);
+    print(result3);
+
+    response_data result4 = client->get(uri3);
+    print(result4);
+
+    response_data result5 = client->get(uri2);
+    print(result5);
+#endif
+}
 ```
 
-#### upload file
-```
-auto client = cinatra::client_factory::instance().new_client("127.0.0.1", "8080");
-client->on_progress([](std::string progress) {
-	std::cout << progress << "\n";
-});
-
-client->upload_file("/upload_multipart", filename, [](auto ec) {
-	if (ec) {
-		std::cout << "upload failed, reason: "<<ec.message();
-	}
-	else {
-		std::cout << "upload successful\n";
-	}
-});
-```
-
-***upload multiple files***
+#### sync_send get/post message
 
 ```
-	for (auto& filename : v) {
+void test_async_client() {
+    
+    std::string uri = "http://www.baidu.com";
+    std::string uri1 = "http://cn.bing.com";
+    std::string uri2 = "https://www.baidu.com";
+    std::string uri3 = "https://cn.bing.com";
 
-		auto client = cinatra::client_factory::instance().new_client("127.0.0.1", "8080");
-		client->on_progress([](std::string progress) {
-			std::cout << progress << "\n";
-		});
+    {
+        auto client = cinatra::client_factory::instance().new_client();
+        client->async_get(uri, [](response_data data) {
+            print(data);
+        });
+    }
+    
+    {
+        auto client = cinatra::client_factory::instance().new_client();
+        client->async_get(uri1, [](response_data data) {
+            print(data);
+        });
+    }
 
-		client->upload_file("/upload_multipart", filename, [](auto ec) {
-			if (ec) {
-				std::cout << "upload failed, reason: "<<ec.message();
-			}
-			else {
-				std::cout << "upload successful\n";
-			}
-		});
+    {
+        auto client = cinatra::client_factory::instance().new_client();
+        client->async_post(uri, "hello", [](response_data data) {
+            print(data);
+        });
+    }
 
-	}
+#ifdef CINATRA_ENABLE_SSL
+    {
+        auto client = cinatra::client_factory::instance().new_client();
+        client->async_get(uri2, [](response_data data) {
+            print(data);
+        });
+    }
+
+    {
+        auto client = cinatra::client_factory::instance().new_client();
+        client->async_get(uri3, [](response_data data) {
+            print(data);
+        });
+    }
+#endif
+}
+```
+
+#### upload(multipart) file
+```
+void test_upload() {
+    std::string uri = "http://cn.bing.com/";
+    auto client = cinatra::client_factory::instance().new_client();
+    client->upload(uri, "boost_1_72_0.7z", [](response_data data) {
+        if (data.ec) {
+            std::cout << data.ec.message() << "\n";
+            return;
+        }
+
+        std::cout << data.resp_body << "\n"; //finished upload
+    });
+}
 ```
 
 #### download file
 
 ```
-auto client = cinatra::client_factory::instance().new_client("127.0.0.1", "8080");
-auto s = "/public/static/test1.png";
-auto filename = std::filesystem::path(s).filename().string();
-client->download_file("temp", filename, s, [](auto ec) {
-	if (ec) {
-		std::cout << ec.message() << "\n";
-	}
-	else {
-		std::cout << "ok\n";
-	}
-});
-```
+void test_download() {
+    std::string uri = "http://www.httpwatch.com/httpgallery/chunked/chunkedimage.aspx";
 
-```
-client->on_length([](size_t length){
-	std::cout<<"recieved data length: "<<length<<"\n";
-});
+    {
+        auto client = cinatra::client_factory::instance().new_client();
+        client->download(uri, "test.jpg", [](response_data data) {
+            if (data.ec) {
+                std::cout << data.ec.message() << "\n";
+                return;
+            }
 
-client->on_data([](std::string_view data){
-	std::cout<<"recieved data: "<<data<<"\n";
-});
-```
+            std::cout << "finished download\n";
+        });
+    }
 
-### simple_client https
+    {
+        auto client = cinatra::client_factory::instance().new_client();
+        client->download(uri, [](auto ec, auto data) {
+            if (ec) {
+                std::cout << ec.message() << "\n";
+                return;
+            }
 
-```
-	boost::asio::ssl::context ctx(boost::asio::ssl::context::sslv23);
-	ctx.set_default_verify_paths();
-
-	auto client = cinatra::client_factory::instance().new_client("127.0.0.1", "https", ctx);
-	client->on_length([](size_t _length) {
-		std::cout << "download file: on_length: " << _length << std::endl;
-	});
-	client->download_file("test.jpg", "/public/static/test.jpg", [](boost::system::error_code ec) {
-		std::cout << "download file: on_complete: " << (!ec ? "true - " : "false - ") << (ec ? ec.message() : "") << std::endl;
-	});
-
-	std::string ss;
-	std::cin >> ss;
+            if (data.empty()) {
+                std::cout << "finished all \n";
+            }
+            else {
+                std::cout << data.size() << "\n";
+            }
+        });
+    }
+}
 ```
 
 ## Performance
 
-We conducted a simple performance test using the [Apache HTTP benchmarking tool, ab](http://httpd.apache.org/docs/2.2/programs/ab.html).
+![qps](../qps.png "qps")
 
-```bash
-ab -c100 -n5000 127.0.0.1:8080/
-```
-
-The server simply returns a hello.  It was tested on an 8-core 16G cloud host with 9000 and 13000 qps (queries per second).
-
-In comparison with Boost.Beast with a similar code, the qps values are quite similar, probably because both cinatra and Boost.Beast are based on Boost.Asio. We have not yet done any special performance optimization with cinatra and there is room for improvement.
+![qps-pipeline](../qps-pipeline.png "qps-pipeline")
 
 ## Caveats
 
@@ -407,13 +442,6 @@ If you find any problems during the trial, please feel free to contact us or ema
 
 After testing and stable use, cinatra will release the official version.
 
-## Roadmap
-
-1. Add a basic client for communication between servers
-
-I hope that more and more people will use cinatra and like it. I also hope that cinatra will become more and more perfect in the process of use. It will become a powerful and easy-to-use http framework. We welcome everyone to actively participate in the cinatra project. You can send an email to suggest, or you can do a pull request, the form is not limited.
-
-In the recent refactoring of Cinatra, it was almost rewritten, the code is more than 30% less than the previous one, the interface is unified, http and business are separated, with better scalability and maintainability.
 
 ## Contact
 

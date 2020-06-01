@@ -8,7 +8,6 @@
 #endif
 #include "define.h"
 #include "upload_file.hpp"
-#include "memento.hpp"
 #include "session.hpp"
 #include "session_manager.hpp"
 #include "url_encode_decode.hpp"
@@ -24,39 +23,82 @@ namespace cinatra {
 		data_error
 	};
 
-	using tcp_socket = boost::asio::ip::tcp::socket;
-	template <typename socket_type>
+    class base_connection;
+	template <typename T>
 	class connection;
-#ifdef CINATRA_ENABLE_SSL
-	using Socket = boost::asio::ssl::stream<tcp_socket>;
-#else
-	using Socket = tcp_socket;
-#endif
 
-	using conn_type = connection<Socket>;
+    using conn_type = std::weak_ptr<base_connection>;
+    class request;
+    using check_header_cb = std::function<bool(request&)>;
 
 	class request {
 	public:
 		using event_call_back = std::function<void(request&)>;
-
-		request(conn_type* con,response& res) : con_(con),res_(res){
+        
+		request(response& res) : res_(res){
 			buf_.resize(1024);
 		}
 
-		auto get_conn() const{
-			return con_;
-		}
+        void set_conn(conn_type conn) {
+            conn_ = std::move(conn);
+        }
 
-		int parse_header(std::size_t last_len) {
+        template<typename T>
+        connection<T>* get_raw_conn() {
+            static_assert(std::is_same_v<T, cinatra::SSL> || std::is_same_v<T, cinatra::NonSSL>, "invalid socket type, must be SSL or NonSSL");
+            if (conn_.expired())
+                return nullptr;
+
+            if (auto base_conn = conn_.lock(); base_conn != nullptr) {
+                return (connection<T>*)(base_conn.get());
+            }
+            else {
+                return nullptr;
+            }
+        }
+
+        template<typename T>
+        std::shared_ptr<connection<T>> get_conn() {
+            static_assert(std::is_same_v<T, cinatra::SSL> || std::is_same_v<T, cinatra::NonSSL>, "invalid socket type, must be SSL or NonSSL");
+            if (conn_.expired())
+                return nullptr;
+
+            if (auto base_conn = conn_.lock(); base_conn != nullptr) {
+                return std::static_pointer_cast<connection<T>>(base_conn);
+            }
+            else {
+                return nullptr;
+            }
+        }
+
+        bool is_conn_alive() {
+            auto base_conn = conn_.lock();
+            return base_conn != nullptr;
+        }
+
+        conn_type get_weak_base_conn() {
+            return conn_;
+        }
+
+		int parse_header(std::size_t last_len, size_t start=0) {
 			using namespace std::string_view_literals;
-			copy_headers_.clear();
+			if(!copy_headers_.empty())
+				copy_headers_.clear();
 			num_headers_ = sizeof(headers_) / sizeof(headers_[0]);
 			header_len_ = phr_parse_request(buf_.data(), cur_size_, &method_,
 				&method_len_, &url_, &url_len_,
 				&minor_version_, headers_, &num_headers_, last_len);
 
+            if (cur_size_ > max_header_len_) {
+                return -1;
+            }
+
 			if (header_len_ <0 )
 				return header_len_;
+
+            if (!check_request()) {
+                return -1;
+            }
 
 			check_gzip();
 			auto header_value = get_header_value("content-length");
@@ -92,6 +134,14 @@ namespace cinatra {
 			return header_len_;
 		}
 
+        bool check_request() {
+            if (check_headers_) {
+                return check_headers_(*this);
+            }
+
+            return true;
+        }
+
 		std::string_view raw_url() {
 			return raw_url_;
 		}
@@ -114,7 +164,7 @@ namespace cinatra {
 		}
 
 		bool has_recieved_all() {
-			return (total_len() == current_size());
+			return (total_len() <= current_size());
 		}
 
 		bool has_recieved_all_part() {
@@ -159,6 +209,30 @@ namespace cinatra {
 
 		char* buffer() {
 			return &buf_[cur_size_];
+		}
+
+		const char* data() {
+			return buf_.data();
+		}
+
+		const size_t last_len() const {
+			return last_len_;
+		}
+
+		std::string_view req_buf() {
+			return std::string_view(buf_.data() + last_len_, total_len());
+		}
+
+		std::string_view head() {
+			return std::string_view(buf_.data() + last_len_, header_len_);
+		}
+
+		std::string_view body() {
+			return std::string_view(buf_.data() + last_len_ + header_len_, body_len_);
+		}
+
+		void set_left_body_size(size_t size) {
+			left_body_len_ = size;
 		}
 
 		std::string_view body() const{
@@ -238,6 +312,10 @@ namespace cinatra {
 			return minor_version_ == 1;
 		}
 
+        int minor_version() {
+            return minor_version_;
+        }
+
 		size_t left_body_len() const{
 			size_t size = buf_.size();
 			return left_body_len_ > size ? size : left_body_len_;
@@ -274,7 +352,7 @@ namespace cinatra {
 		std::string_view get_header_value(std::string_view key) const {
 			if (copy_headers_.empty()) {
 				for (size_t i = 0; i < num_headers_; i++) {
-					if (iequal(headers_[i].name, headers_[i].name_len, key.data()))
+					if (iequal(headers_[i].name, headers_[i].name_len, key.data(), key.length()))
 						return std::string_view(headers_[i].value, headers_[i].value_len);
 				}
 
@@ -485,10 +563,10 @@ namespace cinatra {
 		std::string get_relative_filename() const {
 			auto file_name = get_url();
 			if (is_form_url_encode(file_name)){
-				return "."+code_utils::get_string_by_urldecode(file_name);
+				return code_utils::get_string_by_urldecode(file_name);
 			}
 			
-			return "."+std::string(file_name.data(), file_name.size());
+			return std::string(file_name);
 		}
 
 		std::string get_filename_from_path() const {
@@ -551,30 +629,21 @@ namespace cinatra {
         }
 
 		std::string_view get_query_value(size_t n) {
-			auto url = get_url();
-			size_t tail = (url.back() == '/') ? 1 : 0;
-			for (auto item : memento::pathinfo_mem) {
-				if (url.find(item) != std::string_view::npos) {
-					if (item.length() == url.length())
-						return {};
+            auto get_val = [&n](auto& map) {
+                auto it = map.begin();
+                std::advance(it, n);
+                return it->second;
+            };
 
-					auto str = url.substr(item.length(), url.length() - item.length() - tail);
-					auto params = split(str, "/");
-					if (n >= params.size())
-						return {};
-					if(code_utils::is_url_encode(params[n]))
-					{
-                        auto map_url = url.length()>1 && url.back()=='/' ? url.substr(0,url.length()-1):url;
-                        std::string map_key = std::string(map_url.data(),map_url.size())+ std::to_string(n);
+            if (n >= queries_.size() ) {
+                if(n >= form_url_map_.size())
+                    return {};
 
-						auto ret = utf8_character_pathinfo_params_.emplace(map_key, code_utils::get_string_by_urldecode(params[n]));
-						return std::string_view(ret.first->second.data(), ret.first->second.size());
-					}
-					return params[n];
-				}
-			}
-
-			return {};
+                return get_val(form_url_map_);
+            }
+            else {
+                return get_val(queries_);
+            }
 		}
 
 		template<typename T>
@@ -784,6 +853,15 @@ namespace cinatra {
 			return std::move(aspect_data_);
 		}
 
+		void set_last_len(size_t len) {
+			last_len_ = len;
+		}
+
+        void set_validate(size_t max_header_len, check_header_cb check_headers) {
+            max_header_len_ = max_header_len;
+            check_headers_ = std::move(check_headers);
+        }
+
 	private:
 		void resize_double() {
 			size_t size = buf_.size();
@@ -831,7 +909,7 @@ namespace cinatra {
 		}
 
 		constexpr const static size_t MaxSize = 3 * 1024 * 1024;
-		conn_type* con_ = nullptr;
+        conn_type conn_;
         response& res_;
 		std::vector<char> buf_;
 
@@ -841,9 +919,9 @@ namespace cinatra {
 		size_t method_len_ = 0;
 		const char *url_ = nullptr;
 		size_t url_len_ = 0;
-		int minor_version_;
-		int header_len_;
-		size_t body_len_;
+		int minor_version_ = 0;
+		int header_len_ = 0;
+		size_t body_len_ = 0;
 
 		std::string raw_url_;
 		std::string method_str_;
@@ -854,6 +932,8 @@ namespace cinatra {
 		size_t cur_size_ = 0;
 		size_t left_body_len_ = 0;
 
+		size_t last_len_ = 0; //for pipeline, last request buffer position
+
         std::map<std::string_view, std::string_view> queries_;
 		std::map<std::string_view, std::string_view> form_url_map_;
         std::map<std::string,std::string> multipart_form_map_;
@@ -861,6 +941,10 @@ namespace cinatra {
 		std::string gzip_str_;
 
 		bool is_chunked_ = false;
+
+        //validate
+        size_t max_header_len_ = 1024 * 1024;
+        check_header_cb check_headers_;
 
 		data_proc_state state_ = data_proc_state::data_begin;
 		std::string_view part_data_;
@@ -871,7 +955,7 @@ namespace cinatra {
 		std::vector<upload_file> files_;
 		std::map<std::string,std::string> utf8_character_params_;
 		std::map<std::string,std::string> utf8_character_pathinfo_params_;
-		std::int64_t range_start_pos_;
+		std::int64_t range_start_pos_ = 0;
 		bool is_range_resource_ = 0;
 		std::int64_t static_resource_file_size_ = 0;
 		std::vector<std::string> aspect_data_;

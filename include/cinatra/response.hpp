@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <string_view>
+#include <chrono>
 #include "response_cv.hpp"
 #include "itoa.hpp"
 #include "utils.hpp"
@@ -24,11 +25,92 @@ namespace cinatra {
 
 	class response {
 	public:
-		std::vector<boost::asio::const_buffer> get_response_buffer(std::string&& body) {
-			set_content(std::move(body));
+        response() {
+        }
 
-			auto buffers = to_buffers();
-			return buffers;
+		std::string& response_str(){
+            return rep_str_;
+        }
+
+        void enable_response_time(bool enable) {
+            need_response_time_ = enable;
+            if (need_response_time_) {
+                char mbstr[50];
+                std::time_t tm = std::chrono::system_clock::to_time_t(last_time_);
+                std::strftime(mbstr, sizeof(mbstr), "%a, %d %b %Y %T GMT", std::localtime(&tm));
+                last_date_str_ = mbstr;
+            }
+        }
+
+        template<status_type status, req_content_type content_type, size_t N>
+        constexpr auto set_status_and_content(const char(&content)[N], content_encoding encoding = content_encoding::none) {
+            constexpr auto status_str = to_rep_string(status);
+            constexpr auto type_str = to_content_type_str(content_type);
+            constexpr auto len_str = num_to_string<N-1>::value;
+
+            rep_str_.append(status_str).append(len_str.data(), len_str.size()).append(type_str).append(rep_server);
+
+            if(need_response_time_)
+                append_date_time();
+            else
+                rep_str_.append("\r\n");
+
+            rep_str_.append(content);
+        }
+
+        void append_date_time() {
+            using namespace std::chrono_literals;
+
+            auto t = std::chrono::system_clock::now();
+            if (t - last_time_ > 1s) {
+                char mbstr[50];
+                std::time_t tm = std::chrono::system_clock::to_time_t(t);
+                std::strftime(mbstr, sizeof(mbstr), "%a, %d %b %Y %T GMT", std::localtime(&tm));
+                last_date_str_ = mbstr;
+                rep_str_.append("Date: ").append(mbstr).append("\r\n\r\n");
+                last_time_ = t;
+            }
+            else {
+                rep_str_.append("Date: ").append(last_date_str_).append("\r\n\r\n");
+            }
+        }
+
+		void build_response_str() {
+			rep_str_.append(to_rep_string(status_));
+
+//			if (keep_alive) {
+//				rep_str_.append("Connection: keep-alive\r\n");
+//			}
+//			else {
+//				rep_str_.append("Connection: close\r\n");
+//			}
+
+			if (!headers_.empty()) {
+				for (auto& header : headers_) {
+					rep_str_.append(header.first).append(":").append(header.second).append("\r\n");
+				}
+				headers_.clear();
+			}
+
+			char temp[20] = {};
+			itoa_fwd((int)content_.size(), temp);
+			rep_str_.append("Content-Length: ").append(temp).append("\r\n");
+            if(res_type_!= req_content_type::none){
+                rep_str_.append(get_content_type(res_type_));
+            }
+            rep_str_.append("Server: cinatra\r\n");
+			if (session_ != nullptr && session_->is_need_update()) {
+				auto cookie_str = session_->get_cookie().to_string();
+				rep_str_.append("Set-Cookie: ").append(cookie_str).append("\r\n");
+				session_->set_need_update(false);
+			}
+
+            if (need_response_time_)
+                append_date_time();
+            else
+                rep_str_.append("\r\n");
+
+			rep_str_.append(std::move(content_));
 		}
 
 		std::vector<boost::asio::const_buffer> to_buffers() {
@@ -69,6 +151,10 @@ namespace cinatra {
 			headers_.emplace_back(std::move(key), std::move(value));
 		}
 
+        void clear_headers() {
+            headers_.clear();
+        }
+
 		void set_status(status_type status) {
 			status_ = status;
 		}
@@ -83,17 +169,14 @@ namespace cinatra {
 
 		void set_status_and_content(status_type status) {
 			status_ = status;
-			set_content(to_string(status).data());
+			set_content(std::string(to_string(status)));
+            build_response_str();
 		}
 
-		void set_status_and_content(status_type status, std::string&& content, res_content_type res_type = res_content_type::none, content_encoding encoding = content_encoding::none) {
+		void set_status_and_content(status_type status, std::string&& content, req_content_type res_type = req_content_type::none, content_encoding encoding = content_encoding::none) {
 			status_ = status;
-			if(res_type!=cinatra::res_content_type::none){
-				auto iter = cinatra::res_mime_map.find(res_type);
-				if(iter!=cinatra::res_mime_map.end()){
-					add_header("Content-type",std::string(iter->second.data(),iter->second.size()));
-				}
-			}
+            res_type_ = res_type;
+
 #ifdef CINATRA_ENABLE_GZIP
 			if (encoding == content_encoding::gzip) {
 				std::string encode_str;
@@ -109,40 +192,42 @@ namespace cinatra {
 			else 
 #endif
 				set_content(std::move(content));
+            build_response_str();
 		}
 
-		void set_status_and_content(status_type status, std::string&& content,std::string&& res_content_type_str, content_encoding encoding = content_encoding::none) {
-			status_ = status;
-			add_header("Content-type",std::move(res_content_type_str));
-#ifdef CINATRA_ENABLE_GZIP
-			if (encoding == content_encoding::gzip) {
-				std::string encode_str;
-				bool r = gzip_codec::compress(std::string_view(content.data(), content.length()), encode_str, true);
-				if (!r) {
-					set_status_and_content(status_type::internal_server_error, "gzip compress error");
-				}
-				else {
-					add_header("Content-Encoding", "gzip");
-					set_content(std::move(encode_str));
-				}
-			}
-			else
-#endif
-			set_content(std::move(content));
-		}
+		std::string_view get_content_type(req_content_type type){
+            switch (type) {
+                case cinatra::req_content_type::html:
+                    return rep_html;
+                case cinatra::req_content_type::json:
+                    return rep_json;
+                case cinatra::req_content_type::string:
+                    return rep_string;
+                case cinatra::req_content_type::multipart:
+                    return rep_multipart;
+                case cinatra::req_content_type::none:
+                default:
+                    return "";
+            }
+        }
 
 		bool need_delay() const {
 			return delay_;
 		}
 
 		void reset() {
+            if(headers_.empty())
+			    rep_str_.clear();
+            res_type_ = req_content_type::none;
 			status_ = status_type::init;
 			proc_continue_ = true;
+			delay_ = false;
 			headers_.clear();
 			content_.clear();
-            tmpl_json_data_.clear();
             session_ = nullptr;
-            cache_data.clear();
+
+            if(cache_data.empty())
+                cache_data.clear();
 		}
 
 		void set_continue(bool con) {
@@ -154,13 +239,8 @@ namespace cinatra {
 		}
 
 		void set_content(std::string&& content) {
-			char temp[20] = {};
-			itoa_fwd((int)content.size(), temp);
-			add_header("Content-Length", temp);
-
 			body_type_ = content_type::string;
 			content_ = std::move(content);
-			response_detail::counter_++;
 		}
 
 		void set_chunked() {
@@ -199,6 +279,16 @@ namespace cinatra {
 
 		std::shared_ptr<cinatra::session> start_session()
 		{
+			if (domain_.empty()) {
+				auto host = get_header_value("host");
+				if (!host.empty()) {
+					size_t pos = host.find(':');
+					if (pos != std::string_view::npos) {
+						set_domain(host.substr(0, pos));
+					}
+				}
+			}
+
 			session_ = session_manager::get().create_session(domain_, CSESSIONID);
 			return session_;
 		}
@@ -229,51 +319,8 @@ namespace cinatra {
 			return raw_url_;
 		}
 
-		std::string get_res_content_type_str(const std::string& file_path) {
-			std::string res_content_type_str = "text/html; charset=utf8";
-			auto extension = get_extension(file_path.data());
-			auto mime = get_mime_type(extension);
-			if (mime != "application/octet-stream") {
-				res_content_type_str = std::string(mime.data(), mime.size()) + "; charset=utf8";
-			}
-
-			return res_content_type_str;
-		}
-
-		void  handle_render_view(const std::string& tpl_file_path,const nlohmann::json& tmp_data,status_type server_type =status_type::ok )
-		{
-			std::string res_content_type_str = get_res_content_type_str(tpl_file_path);
-#ifdef  CINATRA_ENABLE_GZIP
-			set_status_and_content(server_type, env.render_template(tmpl, tmp_data),std::move(res_content_type_str),content_encoding::gzip);
-#else
-			set_status_and_content(server_type, render::render_file(tpl_file_path, tmp_data),std::move(res_content_type_str),content_encoding::none);
-#endif
-		}
-
-        void render_view(const std::string& tpl_file_path,const nlohmann::json& tmp_data)
-        {
-            if(tmp_data.is_object())
-            {
-                for(auto iter = tmp_data.begin();iter!=tmp_data.end();++iter)
-                {
-                    tmpl_json_data_[iter.key()] = iter.value();
-                }
-            }
-			handle_render_view(tpl_file_path,tmpl_json_data_);
-        }
-
-        void render_view(const std::string& tpl_file_path)
-        {
-			handle_render_view(tpl_file_path,tmpl_json_data_);
-        }
-
-		void render_raw_view(const std::string& file_path, status_type server_type = status_type::ok) {
-			std::string res_content_type_str = get_res_content_type_str(file_path);
-#ifdef  CINATRA_ENABLE_GZIP
-			set_status_and_content(server_type, env.render_template(file_path), std::move(res_content_type_str), content_encoding::gzip);
-#else
-			set_status_and_content(server_type, render::render_file(file_path), std::move(res_content_type_str), content_encoding::none);
-#endif
+		void set_headers(std::pair<phr_header*, size_t> headers) {
+			req_headers_ = headers;
 		}
 
         void render_json(const nlohmann::json& json_data)
@@ -281,7 +328,7 @@ namespace cinatra {
 #ifdef  CINATRA_ENABLE_GZIP
             set_status_and_content(status_type::ok,json_data.dump(),res_content_type::json,content_encoding::gzip);
 #else
-            set_status_and_content(status_type::ok,json_data.dump(),res_content_type::json,content_encoding::none);
+            set_status_and_content(status_type::ok,json_data.dump(),req_content_type::json,content_encoding::none);
 #endif
         }
 
@@ -290,23 +337,9 @@ namespace cinatra {
 #ifdef  CINATRA_ENABLE_GZIP
 			set_status_and_content(status_type::ok,std::move(content),res_content_type::string,content_encoding::gzip);
 #else
-			set_status_and_content(status_type::ok,std::move(content),res_content_type::string,content_encoding::none);
+			set_status_and_content(status_type::ok,std::move(content),req_content_type::string,content_encoding::none);
 #endif
 		}
-
-        void render_404(const std::string& tpl_file_path = "")
-        {
-        	if(!tpl_file_path.empty())
-			{
-				handle_render_view(tpl_file_path,tmpl_json_data_,status_type::not_found);
-				return;
-			}
-#ifdef  CINATRA_ENABLE_GZIP
-            set_status_and_content(status_type::not_found,std::string(not_found.data(),not_found.size()),res_content_type::html,content_encoding::gzip);
-#else
-            set_status_and_content(status_type::not_found,std::string(not_found.data(),not_found.size()),res_content_type::html,content_encoding::none);
-#endif
-        }
 
 		std::vector<std::string> raw_content() {
 			return cache_data;
@@ -323,17 +356,6 @@ namespace cinatra {
 			set_status_and_content(status_type::temporary_redirect);
 		}
 
-        void set_base_path(const std::string&key,const std::string& path)
-        {
-            tmpl_json_data_[key] = path;
-        }
-
-        template<typename T>
-        void set_attr(const std::string& key,const T& value)
-        {
-            tmpl_json_data_[key] = value;
-        }
-
 		void set_session(std::weak_ptr<cinatra::session> sessionref)
 		{
 			if(sessionref.lock()){
@@ -341,21 +363,18 @@ namespace cinatra {
 			}
 		}
 
-		static int get_counter() {
-			return response_detail::counter_;
-		}
-
-		static void increase_counter() {
-            response_detail::counter_++;
-		}
-
-		static void reset_counter() {
-            response_detail::counter_ = 0;
-		}
-
 	private:
-		
-		//std::map<std::string, std::string, ci_less> headers_;
+		std::string_view get_header_value(std::string_view key) const {
+			phr_header* headers = req_headers_.first;
+			size_t num_headers = req_headers_.second;
+			for (size_t i = 0; i < num_headers; i++) {
+				if (iequal(headers[i].name, headers[i].name_len, key.data(), key.length()))
+					return std::string_view(headers[i].value, headers[i].value_len);
+			}
+
+			return {};
+		}
+
 		std::string_view raw_url_;
 		std::vector<std::pair<std::string, std::string>> headers_;
 		std::vector<std::string> cache_data;
@@ -367,11 +386,15 @@ namespace cinatra {
 
 		bool delay_ = false;
 
+		std::pair<phr_header*, size_t> req_headers_;
 		std::string_view domain_;
 		std::string_view path_;
 		std::shared_ptr<cinatra::session> session_ = nullptr;
-		nlohmann::json tmpl_json_data_;
-		inline static std::atomic_int counter_ = 0;
+		std::string rep_str_;
+		std::chrono::system_clock::time_point last_time_ = std::chrono::system_clock::now();
+		std::string last_date_str_;
+        req_content_type res_type_;
+        bool need_response_time_ = false;
 	};
 }
 #endif //CINATRA_RESPONSE_HPP

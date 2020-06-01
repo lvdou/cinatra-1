@@ -1,18 +1,8 @@
 #pragma once
-#ifdef _MSC_VER
-#include <filesystem>
-namespace fs = std::filesystem;
-namespace sys = std;
-#else
-//#include <experimental/filesystem>
-//namespace fs = std::experimental::filesystem;
-#include <boost/filesystem.hpp>
-namespace fs = boost::filesystem;
-namespace sys = boost::system;
-#endif
 #include <fstream>
 #include <string>
 #include "utils.hpp"
+
 namespace cinatra {
 	class upload_file {
 	public:
