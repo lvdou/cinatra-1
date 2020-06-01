@@ -72,7 +72,7 @@ namespace cinatra {
 		{
 			//auto directory_path = file_path_.substr(0,file_path_.rfind("/"));
 			//auto new_file_path = directory_path+"/"+new_file_name;
-			sys::error_code code;
+			std::error_code code;
 			fs::rename(file_path_, new_file_name, code);
 			if (!code) {
 				file_path_ = new_file_name;
